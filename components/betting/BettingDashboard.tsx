@@ -17,7 +17,6 @@ function applyFilter(list: BetAnalysis[], f: Filter) {
 
 function applySort(list: BetAnalysis[], s: Sort) {
   return [...list].sort((a, b) => {
-    // Always keep live on top within each sort
     if (a.isLive && !b.isLive) return -1
     if (!a.isLive && b.isLive) return 1
     if (s === "ev") return b.expectedValuePct - a.expectedValuePct
@@ -28,8 +27,65 @@ function applySort(list: BetAnalysis[], s: Sort) {
 
 function fmt(n: number) { return n > 0 ? `+${n}` : `${n}` }
 
+function SetupScreen() {
+  return (
+    <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center p-4">
+      <div className="max-w-lg w-full space-y-6">
+        <div className="text-center space-y-2">
+          <div className="text-5xl font-black tracking-tight">Underdog<span className="text-emerald-400">.</span></div>
+          <p className="text-zinc-400 text-sm">Real-time sports betting value finder — powered by live odds across 30+ sports</p>
+        </div>
+
+        <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-6 space-y-5">
+          <div className="font-semibold text-white">Connect live odds data</div>
+
+          <div className="space-y-3 text-sm">
+            {[
+              { n: "1", title: "Get a free API key", body: <>Visit <span className="text-emerald-400 font-medium">the-odds-api.com</span> and create a free account. Free tier includes 500 requests/month — enough for daily use.</> },
+              { n: "2", title: "Add it to Vercel", body: <>In your Vercel project go to <span className="text-zinc-300">Settings → Environment Variables</span> and add <code className="bg-zinc-800 px-1.5 py-0.5 rounded text-xs text-emerald-400">ODDS_API_KEY</code> with your key value.</> },
+              { n: "3", title: "Redeploy", body: <>Trigger a new deployment in Vercel or push any commit. The app will immediately start pulling live odds from 40+ bookmakers.</> },
+            ].map((s) => (
+              <div key={s.n} className="flex gap-3">
+                <span className="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-bold flex items-center justify-center mt-0.5">{s.n}</span>
+                <div>
+                  <div className="font-medium text-zinc-200 mb-0.5">{s.title}</div>
+                  <div className="text-zinc-500">{s.body}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-5 space-y-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-zinc-500">What you get</div>
+          <div className="grid grid-cols-2 gap-2">
+            {[
+              ["30+ sports", "NBA, NFL, MLB, NHL, soccer, tennis, MMA, cricket & more"],
+              ["40+ bookmakers", "FanDuel, DraftKings, BetMGM, Bet365, Caesars and more"],
+              ["No-vig EV analysis", "Strips bookmaker margin to find true statistical value"],
+              ["Live detection", "Games in progress surface first with live score context"],
+              ["Line-shopping edge", "Best odds vs. market average across all books"],
+              ["45-second refresh", "Odds update continuously throughout the day"],
+            ].map(([title, desc]) => (
+              <div key={title} className="flex gap-2 text-xs">
+                <span className="text-emerald-500 flex-shrink-0 mt-0.5">▸</span>
+                <span><span className="text-zinc-300 font-medium">{title}</span> — <span className="text-zinc-600">{desc}</span></span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <p className="text-center text-xs text-zinc-600">
+          Positive EV reflects long-run statistical value, not a guaranteed outcome. Gamble responsibly.
+        </p>
+      </div>
+    </div>
+  )
+}
+
 export function BettingDashboard() {
   const [data, setData] = useState<AnalysisResponse | null>(null)
+  const [needsSetup, setNeedsSetup] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [filter, setFilter] = useState<Filter>("LIVE NOW")
@@ -43,6 +99,7 @@ export function BettingDashboard() {
     try {
       const res = await fetch("/api/odds")
       const json = await res.json()
+      if (json.needsSetup) { setNeedsSetup(true); return }
       if (json.error) throw new Error(json.error)
       setData(json)
       setRefreshed(new Date())
@@ -58,6 +115,8 @@ export function BettingDashboard() {
     const t = setInterval(load, 45_000)
     return () => clearInterval(t)
   }, [load])
+
+  if (needsSetup) return <SetupScreen />
 
   if (loading && !data) {
     return (
@@ -103,15 +162,12 @@ export function BettingDashboard() {
         <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
           <div>
             <h1 className="font-bold text-white flex items-center gap-2">
-              Underdog Analyzer
+              Underdog<span className="text-emerald-400">.</span>
               {data.marketStats.liveCount > 0 && (
                 <span className="flex items-center gap-1 text-xs font-bold bg-red-500/20 text-red-400 border border-red-500/30 px-2 py-0.5 rounded-full">
                   <span className="live-dot w-1.5 h-1.5 rounded-full bg-red-400 inline-block" />
                   {data.marketStats.liveCount} LIVE
                 </span>
-              )}
-              {data.isDemo && (
-                <span className="text-xs font-normal bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded-full">DEMO</span>
               )}
             </h1>
             <p className="text-xs text-zinc-500">
@@ -128,13 +184,6 @@ export function BettingDashboard() {
       </header>
 
       <main className="max-w-4xl mx-auto px-4 py-6 space-y-6">
-        {/* Demo banner */}
-        {data.isDemo && (
-          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
-            Running on sample data. Add <code className="bg-amber-500/20 px-1 rounded text-xs">ODDS_API_KEY</code> to <code className="bg-amber-500/20 px-1 rounded text-xs">.env.local</code> for live odds across 30+ sports. Free at <strong>the-odds-api.com</strong>.
-          </div>
-        )}
-
         {/* Stat strip */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {[
@@ -260,7 +309,7 @@ export function BettingDashboard() {
             <div className="rounded-2xl bg-zinc-900 border border-zinc-800 p-8 text-center space-y-2">
               <p className="text-zinc-500 text-sm">
                 {filter === "LIVE NOW"
-                  ? "No live games detected right now. Check back soon or switch to ALL."
+                  ? "No live games in progress right now. Check back soon or view upcoming games."
                   : "No bets match this filter."}
               </p>
               {filter === "LIVE NOW" && (
@@ -281,7 +330,7 @@ export function BettingDashboard() {
         {/* API quota */}
         {data.apiQuotaRemaining !== undefined && (
           <p className="text-xs text-zinc-600 text-center">
-            The Odds API quota remaining: {data.apiQuotaRemaining} requests
+            Odds API requests remaining this month: {data.apiQuotaRemaining.toLocaleString()}
           </p>
         )}
 
@@ -290,11 +339,11 @@ export function BettingDashboard() {
           <div className="font-semibold text-zinc-300 text-sm">How the analysis works</div>
           <div className="grid sm:grid-cols-2 gap-2">
             {[
-              ["Live detection", "Sport-specific time windows (e.g. 5h for tennis, 4h for baseball) flag in-progress games"],
               ["No-vig probability", "Bookmaker margin stripped out to expose true market consensus win probability"],
               ["Expected Value (EV%)", "(win_prob × profit) − (loss_prob × stake) — positive means statistically mispriced"],
               ["Value rating", "Gap between no-vig consensus and book's implied probability — positive = underpriced underdog"],
               ["Line-shopping edge", "Best available odds vs average across all books — includes US, UK, EU & AU markets"],
+              ["Live detection", "Sport-specific time windows (e.g. 5h for tennis, 4h for baseball) flag in-progress games"],
               ["Underdog score", "Weighted composite + live bonus: EV 45% · value 30% · line-shopping 15% · gap 10%"],
             ].map(([title, desc]) => (
               <div key={title} className="flex gap-2 text-xs">

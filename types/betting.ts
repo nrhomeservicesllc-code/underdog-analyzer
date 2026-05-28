@@ -75,6 +75,7 @@ export interface BetAnalysis {
 
 export interface AnalysisResponse {
   timestamp: string
+  needsSetup: boolean
   sportsAnalyzed: string[]
   totalGamesScanned: number
   liveGameCount: number
@@ -89,6 +90,5 @@ export interface AnalysisResponse {
     strongBuyCount: number
     liveCount: number
   }
-  isDemo: boolean
   apiQuotaRemaining?: number
 }
