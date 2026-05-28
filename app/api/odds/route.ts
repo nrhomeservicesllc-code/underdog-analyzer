@@ -65,7 +65,7 @@ export async function GET() {
       }
     }
 
-    return NextResponse.json({
+    const payload = {
       timestamp: new Date().toISOString(),
       isDemo,
       sportsAnalyzed: sportsFound,
@@ -85,6 +85,9 @@ export async function GET() {
         liveCount: live.length,
       },
       apiQuotaRemaining: quota,
+    }
+    return NextResponse.json(payload, {
+      headers: { "Cache-Control": "no-store, max-age=0" },
     })
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 500 })
