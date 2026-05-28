@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { getClient, SPORT_PRIORITY } from "@/lib/odds-api"
+import { getClient, SPORT_PRIORITY, isEventLive } from "@/lib/odds-api"
 import { analyzeAll } from "@/lib/analyzer"
 import { demoEvents } from "@/lib/demo"
 import type { OddsApiEvent } from "@/types/betting"
@@ -20,27 +20,37 @@ export async function GET() {
       sportsFound.push(...[...new Set(events.map((e) => e.sport_title))])
     } else {
       const client = getClient()
-      const available = await client.getSports()
-      const activeKeys = new Set(available.filter((s) => s.active && !s.has_outrights).map((s) => s.key))
-      const toFetch = SPORT_PRIORITY.filter((k) => activeKeys.has(k)).slice(0, 8)
 
-      for (const sport of toFetch) {
-        try {
-          const result = await client.getOdds(sport)
-          quota = result.quota
-          events.push(...result.events)
-          if (result.events.length) sportsFound.push(result.events[0].sport_title)
-        } catch {
-          // sport has no games right now
+      // Get every active, non-outright sport the API has
+      const available = await client.getSports()
+      const activeKeys = new Set(
+        available.filter((s) => s.active && !s.has_outrights).map((s) => s.key)
+      )
+
+      // Fetch priority sports first, then any remaining active ones
+      const prioritised = SPORT_PRIORITY.filter((k) => activeKeys.has(k))
+      const remaining = [...activeKeys].filter((k) => !SPORT_PRIORITY.includes(k))
+      const toFetch = [...prioritised, ...remaining].slice(0, 30)
+
+      const results = await Promise.allSettled(
+        toFetch.map((sport) => client.getOdds(sport))
+      )
+
+      for (const r of results) {
+        if (r.status !== "fulfilled") continue
+        quota = r.value.quota
+        events.push(...r.value.events)
+        if (r.value.events.length) {
+          sportsFound.push(r.value.events[0].sport_title)
         }
       }
     }
 
     const analyses = analyzeAll(events)
+    const live = analyses.filter((a) => a.isLive)
     const positive = analyses.filter((a) => a.expectedValuePct > 0)
     const strong = analyses.filter((a) => a.recommendation === "STRONG BUY")
 
-    // avg vig across all books
     let totalVig = 0, vigCount = 0
     for (const e of events) {
       for (const book of e.bookmakers ?? []) {
@@ -60,14 +70,19 @@ export async function GET() {
       isDemo,
       sportsAnalyzed: sportsFound,
       totalGamesScanned: events.length,
+      liveGameCount: events.filter((e) => isEventLive(e.commence_time, e.sport_key)).length,
       totalBetsAnalyzed: analyses.length,
-      topUnderdog: analyses[0] ?? null,
+      liveAnalyses: live,
+      topUnderdog: live[0] ?? analyses[0] ?? null,
       allAnalyses: analyses,
       marketStats: {
         avgVigPct: vigCount ? totalVig / vigCount : 0,
-        avgOddsGap: analyses.length ? analyses.reduce((s, a) => s + a.oddsGap, 0) / analyses.length : 0,
+        avgOddsGap: analyses.length
+          ? analyses.reduce((s, a) => s + a.oddsGap, 0) / analyses.length
+          : 0,
         positiveEvCount: positive.length,
         strongBuyCount: strong.length,
+        liveCount: live.length,
       },
       apiQuotaRemaining: quota,
     })

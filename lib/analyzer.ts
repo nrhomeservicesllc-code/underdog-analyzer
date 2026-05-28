@@ -1,6 +1,5 @@
 import type { OddsApiEvent, BetAnalysis, TeamOdds, Bookmaker } from "@/types/betting"
-
-// ── Conversions ──────────────────────────────────────────────────────────────
+import { isEventLive } from "./odds-api"
 
 export function toDecimal(american: number) {
   return american > 0 ? american / 100 + 1 : 100 / Math.abs(american) + 1
@@ -10,14 +9,10 @@ export function toAmerican(decimal: number) {
   return decimal >= 2 ? Math.round((decimal - 1) * 100) : Math.round(-100 / (decimal - 1))
 }
 
-// ── No-vig (fair) probability ─────────────────────────────────────────────────
-
 function noVig(probs: number[]) {
   const sum = probs.reduce((s, p) => s + p, 0)
   return probs.map((p) => p / sum)
 }
-
-// ── Team odds aggregation ─────────────────────────────────────────────────────
 
 function aggregate(team: string, isHome: boolean, books: Bookmaker[]): TeamOdds | null {
   const entries: { bookmaker: string; american: number; decimal: number }[] = []
@@ -50,15 +45,14 @@ function aggregate(team: string, isHome: boolean, books: Bookmaker[]): TeamOdds 
   }
 }
 
-// ── Score & recommendation ────────────────────────────────────────────────────
-
-function score(evPct: number, valueRating: number, lineEdge: number, gap: number) {
+function score(evPct: number, valueRating: number, lineEdge: number, gap: number, isLive: boolean) {
+  const liveBonus = isLive ? 8 : 0 // live games get a score boost
   return (
     Math.max(-1, Math.min(1, evPct / 30)) * 0.45 +
     Math.max(-1, Math.min(1, valueRating * 5)) * 0.30 +
     Math.min(1, lineEdge / 0.1) * 0.15 +
     Math.min(1, gap / 0.15) * 0.10
-  ) * 100
+  ) * 100 + liveBonus
 }
 
 function recommend(s: number, ev: number): BetAnalysis["recommendation"] {
@@ -68,10 +62,11 @@ function recommend(s: number, ev: number): BetAnalysis["recommendation"] {
   return "AVOID"
 }
 
-// ── Notes ─────────────────────────────────────────────────────────────────────
-
-function notes(ud: TeamOdds, evPct: number, valueRating: number, lineEdge: number, bookCount: number) {
+function notes(ud: TeamOdds, evPct: number, valueRating: number, lineEdge: number, bookCount: number, isLive: boolean) {
   const out: string[] = []
+
+  if (isLive) out.push("Game is LIVE — odds reflect current in-game state")
+
   if (evPct > 0)
     out.push(`Positive EV of +${evPct.toFixed(1)}% on the underdog at best available odds`)
   else
@@ -94,8 +89,6 @@ function notes(ud: TeamOdds, evPct: number, valueRating: number, lineEdge: numbe
   return out
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
-
 export function analyzeEvent(event: OddsApiEvent): BetAnalysis | null {
   if (!event.bookmakers?.length) return null
 
@@ -116,7 +109,8 @@ export function analyzeEvent(event: OddsApiEvent): BetAnalysis | null {
   const valueRating = ud.noVigProbability - ud.impliedProbability
   const lineEdge = 1 / ud.avgDecimalOdds - 1 / ud.bestDecimalOdds
   const gap = Math.abs(valueRating)
-  const udScore = score(evPct, valueRating, lineEdge, gap)
+  const live = isEventLive(event.commence_time, event.sport_key)
+  const udScore = score(evPct, valueRating, lineEdge, gap, live)
 
   return {
     eventId: event.id,
@@ -125,7 +119,7 @@ export function analyzeEvent(event: OddsApiEvent): BetAnalysis | null {
     homeTeam: event.home_team,
     awayTeam: event.away_team,
     commenceTime: event.commence_time,
-    isLive: new Date(event.commence_time) <= new Date(),
+    isLive: live,
     favoriteTeam: fav,
     underdogTeam: ud,
     oddsGap: gap,
@@ -138,7 +132,7 @@ export function analyzeEvent(event: OddsApiEvent): BetAnalysis | null {
     bookmakerCount: event.bookmakers.length,
     consensusProbability: ud.noVigProbability,
     lineShoppingEdge: lineEdge,
-    analysisNotes: notes(ud, evPct, valueRating, lineEdge, event.bookmakers.length),
+    analysisNotes: notes(ud, evPct, valueRating, lineEdge, event.bookmakers.length, live),
   }
 }
 
@@ -146,5 +140,10 @@ export function analyzeAll(events: OddsApiEvent[]): BetAnalysis[] {
   return events
     .map(analyzeEvent)
     .filter((a): a is BetAnalysis => a !== null)
-    .sort((a, b) => b.underdogScore - a.underdogScore)
+    .sort((a, b) => {
+      // Live games always surface first, then by score
+      if (a.isLive && !b.isLive) return -1
+      if (!a.isLive && b.isLive) return 1
+      return b.underdogScore - a.underdogScore
+    })
 }

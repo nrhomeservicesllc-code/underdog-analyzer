@@ -77,7 +77,9 @@ export interface AnalysisResponse {
   timestamp: string
   sportsAnalyzed: string[]
   totalGamesScanned: number
+  liveGameCount: number
   totalBetsAnalyzed: number
+  liveAnalyses: BetAnalysis[]
   topUnderdog: BetAnalysis | null
   allAnalyses: BetAnalysis[]
   marketStats: {
@@ -85,6 +87,7 @@ export interface AnalysisResponse {
     avgOddsGap: number
     positiveEvCount: number
     strongBuyCount: number
+    liveCount: number
   }
   isDemo: boolean
   apiQuotaRemaining?: number
