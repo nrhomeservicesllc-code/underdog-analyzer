@@ -92,3 +92,21 @@ export interface AnalysisResponse {
   }
   apiQuotaRemaining?: number
 }
+
+export interface TrackedBet {
+  id: string
+  eventId: string
+  trackedAt: string
+  sport: string
+  sportTitle: string
+  homeTeam: string
+  awayTeam: string
+  underdogTeam: string
+  favoriteTeam: string
+  odds: number
+  bookmaker: string
+  evPct: number
+  commenceTime: string
+  status: "PENDING" | "WON" | "LOST"
+  settledAt?: string
+}

@@ -1,13 +1,19 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
-import type { AnalysisResponse, BetAnalysis } from "@/types/betting"
+import { useState, useEffect, useCallback, useRef } from "react"
+import type { AnalysisResponse, BetAnalysis, TrackedBet } from "@/types/betting"
 import { UnderdogCard } from "./UnderdogCard"
+import { BetTracker } from "./BetTracker"
+import { loadBets, trackBet, untrackBet, isTracked } from "@/lib/tracker"
 
 type Filter = "LIVE NOW" | "ALL" | "STRONG BUY" | "BUY" | "WATCH"
 type Sort = "score" | "ev" | "odds"
 
 const FILTERS: Filter[] = ["LIVE NOW", "ALL", "STRONG BUY", "BUY", "WATCH"]
+
+// Faster refresh when games are live, slower when only upcoming
+const LIVE_INTERVAL_MS = 30_000
+const IDLE_INTERVAL_MS = 90_000
 
 function applyFilter(list: BetAnalysis[], f: Filter) {
   if (f === "LIVE NOW") return list.filter((a) => a.isLive)
@@ -38,12 +44,11 @@ function SetupScreen() {
 
         <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-6 space-y-5">
           <div className="font-semibold text-white">Connect live odds data</div>
-
           <div className="space-y-3 text-sm">
             {[
-              { n: "1", title: "Get a free API key", body: <>Visit <span className="text-emerald-400 font-medium">the-odds-api.com</span> and create a free account. Free tier includes 500 requests/month — enough for daily use.</> },
-              { n: "2", title: "Add it to Vercel", body: <>In your Vercel project go to <span className="text-zinc-300">Settings → Environment Variables</span> and add <code className="bg-zinc-800 px-1.5 py-0.5 rounded text-xs text-emerald-400">ODDS_API_KEY</code> with your key value.</> },
-              { n: "3", title: "Redeploy", body: <>Trigger a new deployment in Vercel or push any commit. The app will immediately start pulling live odds from 40+ bookmakers.</> },
+              { n: "1", title: "Get a free API key", body: <>Visit <span className="text-emerald-400 font-medium">the-odds-api.com</span> and create a free account. Free tier includes 500 requests/month.</> },
+              { n: "2", title: "Add it to Vercel", body: <>In your Vercel project go to <span className="text-zinc-300">Settings → Environment Variables</span> and add <code className="bg-zinc-800 px-1.5 py-0.5 rounded text-xs text-emerald-400">ODDS_API_KEY</code> with your key.</> },
+              { n: "3", title: "Redeploy", body: <>Trigger a new deployment. The app will immediately start pulling live odds from 40+ bookmakers.</> },
             ].map((s) => (
               <div key={s.n} className="flex gap-3">
                 <span className="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-bold flex items-center justify-center mt-0.5">{s.n}</span>
@@ -63,9 +68,9 @@ function SetupScreen() {
               ["30+ sports", "NBA, NFL, MLB, NHL, soccer, tennis, MMA, cricket & more"],
               ["40+ bookmakers", "FanDuel, DraftKings, BetMGM, Bet365, Caesars and more"],
               ["No-vig EV analysis", "Strips bookmaker margin to find true statistical value"],
-              ["Live detection", "Games in progress surface first with live score context"],
+              ["Live line updates", "Odds refresh every 30s during live games, ended games removed"],
               ["Line-shopping edge", "Best odds vs. market average across all books"],
-              ["45-second refresh", "Odds update continuously throughout the day"],
+              ["Win/loss tracker", "Track your picks and record P&L across all bets"],
             ].map(([title, desc]) => (
               <div key={title} className="flex gap-2 text-xs">
                 <span className="text-emerald-500 flex-shrink-0 mt-0.5">▸</span>
@@ -92,6 +97,13 @@ export function BettingDashboard() {
   const [sort, setSort] = useState<Sort>("score")
   const [expanded, setExpanded] = useState<string | null>(null)
   const [refreshed, setRefreshed] = useState<Date | null>(null)
+  const [trackedBets, setTrackedBets] = useState<TrackedBet[]>([])
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Load tracked bets from localStorage (client only)
+  useEffect(() => { setTrackedBets(loadBets()) }, [])
+
+  const reloadBets = useCallback(() => setTrackedBets(loadBets()), [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -110,11 +122,24 @@ export function BettingDashboard() {
     }
   }, [])
 
+  useEffect(() => { load() }, [load])
+
+  // Dynamic refresh interval: faster when games are live
   useEffect(() => {
-    load()
-    const t = setInterval(load, 45_000)
-    return () => clearInterval(t)
-  }, [load])
+    if (intervalRef.current) clearInterval(intervalRef.current)
+    const hasLive = (data?.marketStats.liveCount ?? 0) > 0
+    intervalRef.current = setInterval(load, hasLive ? LIVE_INTERVAL_MS : IDLE_INTERVAL_MS)
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
+  }, [load, data?.marketStats.liveCount])
+
+  function handleTrack(analysis: BetAnalysis) {
+    if (isTracked(analysis.eventId, trackedBets)) {
+      untrackBet(analysis.eventId)
+    } else {
+      trackBet(analysis)
+    }
+    reloadBets()
+  }
 
   if (needsSetup) return <SetupScreen />
 
@@ -146,6 +171,7 @@ export function BettingDashboard() {
   const top = data.topUnderdog
   const sorted = applySort(data.allAnalyses, sort)
   const visible = applyFilter(sorted, filter)
+  const hasLive = data.marketStats.liveCount > 0
 
   const counts: Record<Filter, number> = {
     "LIVE NOW": data.allAnalyses.filter((a) => a.isLive).length,
@@ -163,7 +189,7 @@ export function BettingDashboard() {
           <div>
             <h1 className="font-bold text-white flex items-center gap-2">
               Underdog<span className="text-emerald-400">.</span>
-              {data.marketStats.liveCount > 0 && (
+              {hasLive && (
                 <span className="flex items-center gap-1 text-xs font-bold bg-red-500/20 text-red-400 border border-red-500/30 px-2 py-0.5 rounded-full">
                   <span className="live-dot w-1.5 h-1.5 rounded-full bg-red-400 inline-block" />
                   {data.marketStats.liveCount} LIVE
@@ -173,6 +199,7 @@ export function BettingDashboard() {
             <p className="text-xs text-zinc-500">
               {data.totalGamesScanned} games · {data.sportsAnalyzed.length} sports
               {refreshed && ` · ${refreshed.toLocaleTimeString()}`}
+              {hasLive && <span className="text-zinc-600"> · refreshing every 30s</span>}
             </p>
           </div>
           <button onClick={load} disabled={loading}
@@ -184,6 +211,10 @@ export function BettingDashboard() {
       </header>
 
       <main className="max-w-4xl mx-auto px-4 py-6 space-y-6">
+
+        {/* Win/Loss tracker — only shows when picks have been added */}
+        <BetTracker bets={trackedBets} onChange={reloadBets} />
+
         {/* Stat strip */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {[
@@ -237,9 +268,9 @@ export function BettingDashboard() {
               : "bg-gradient-to-br from-emerald-900/50 to-teal-900/50 border-emerald-500/30"
           }`}>
             <div className="text-xs font-bold uppercase tracking-widest mb-1 flex items-center gap-2" style={{ color: top.isLive ? "#f87171" : "#34d399" }}>
-              {top.isLive ? (
-                <><span className="live-dot w-1.5 h-1.5 rounded-full bg-red-400 inline-block" />Top Live Underdog Pick</>
-              ) : "Top Underdog Pick"}
+              {top.isLive
+                ? <><span className="live-dot w-1.5 h-1.5 rounded-full bg-red-400 inline-block" />Top Live Underdog Pick</>
+                : "Top Underdog Pick"}
             </div>
             <div className="flex items-start justify-between flex-wrap gap-3">
               <div>
@@ -320,9 +351,15 @@ export function BettingDashboard() {
             </div>
           ) : (
             visible.map((a, i) => (
-              <UnderdogCard key={a.eventId} analysis={a} rank={i + 1}
+              <UnderdogCard
+                key={a.eventId}
+                analysis={a}
+                rank={i + 1}
                 expanded={expanded === a.eventId}
-                onToggle={() => setExpanded((prev) => (prev === a.eventId ? null : a.eventId))} />
+                tracked={isTracked(a.eventId, trackedBets)}
+                onToggle={() => setExpanded((prev) => (prev === a.eventId ? null : a.eventId))}
+                onTrack={() => handleTrack(a)}
+              />
             ))
           )}
         </div>

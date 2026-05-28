@@ -20,12 +20,16 @@ export function UnderdogCard({
   analysis,
   rank,
   expanded,
+  tracked,
   onToggle,
+  onTrack,
 }: {
   analysis: BetAnalysis
   rank: number
   expanded: boolean
+  tracked: boolean
   onToggle: () => void
+  onTrack: () => void
 }) {
   const r = REC[analysis.recommendation]
   const ud = analysis.underdogTeam
@@ -34,7 +38,13 @@ export function UnderdogCard({
 
   return (
     <div
-      className={`rounded-2xl bg-zinc-900 border border-zinc-800 overflow-hidden transition-all ${expanded ? `ring-2 ${r.ring}` : "hover:border-zinc-700"}`}
+      className={`rounded-2xl bg-zinc-900 border overflow-hidden transition-all ${
+        tracked
+          ? "border-amber-500/50 ring-1 ring-amber-500/20"
+          : expanded
+          ? `border-zinc-700 ring-2 ${r.ring}`
+          : "border-zinc-800 hover:border-zinc-700"
+      }`}
     >
       {/* color bar */}
       <div className={`h-1 w-full ${r.bar}`} />
@@ -61,6 +71,11 @@ export function UnderdogCard({
                 <span className="text-xs text-zinc-600">{time}</span>
               )}
               <span className="text-xs text-zinc-600">{analysis.bookmakerCount} books</span>
+              {tracked && (
+                <span className="text-xs font-semibold text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded-full">
+                  Tracking
+                </span>
+              )}
             </div>
 
             {/* matchup */}
@@ -121,7 +136,7 @@ export function UnderdogCard({
             ))}
           </div>
 
-          {/* odds table */}
+          {/* live odds table — updates every refresh */}
           <div className="grid grid-cols-2 gap-4">
             {[{ team: ud, label: "Underdog" }, { team: fav, label: "Favorite" }].map(({ team, label }) => (
               <div key={team.team}>
@@ -155,7 +170,21 @@ export function UnderdogCard({
             </div>
           )}
 
-          <p className="text-xs text-zinc-600 italic border-t border-zinc-800 pt-3">
+          {/* Track pick button */}
+          <div className="border-t border-zinc-800 pt-4">
+            <button
+              onClick={(e) => { e.stopPropagation(); onTrack() }}
+              className={`w-full py-2.5 rounded-xl text-sm font-semibold transition-colors ${
+                tracked
+                  ? "bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:bg-red-500/20 hover:text-red-400 hover:border-red-500/30"
+                  : "bg-emerald-600 hover:bg-emerald-500 text-white"
+              }`}
+            >
+              {tracked ? "Remove from My Picks" : "Track This Pick"}
+            </button>
+          </div>
+
+          <p className="text-xs text-zinc-600 italic">
             Positive EV reflects statistical value over a large sample — not a guaranteed outcome. Gamble responsibly.
           </p>
         </div>

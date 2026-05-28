@@ -46,7 +46,7 @@ function aggregate(team: string, isHome: boolean, books: Bookmaker[]): TeamOdds 
 }
 
 function score(evPct: number, valueRating: number, lineEdge: number, gap: number, isLive: boolean) {
-  const liveBonus = isLive ? 8 : 0 // live games get a score boost
+  const liveBonus = isLive ? 8 : 0
   return (
     Math.max(-1, Math.min(1, evPct / 30)) * 0.45 +
     Math.max(-1, Math.min(1, valueRating * 5)) * 0.30 +
@@ -137,11 +137,17 @@ export function analyzeEvent(event: OddsApiEvent): BetAnalysis | null {
 }
 
 export function analyzeAll(events: OddsApiEvent[]): BetAnalysis[] {
+  const now = Date.now()
   return events
     .map(analyzeEvent)
-    .filter((a): a is BetAnalysis => a !== null)
+    .filter((a): a is BetAnalysis => {
+      if (!a) return false
+      // Drop games that have started but are past their live window — they're over
+      const started = new Date(a.commenceTime).getTime() < now
+      if (started && !a.isLive) return false
+      return true
+    })
     .sort((a, b) => {
-      // Live games always surface first, then by score
       if (a.isLive && !b.isLive) return -1
       if (!a.isLive && b.isLive) return 1
       return b.underdogScore - a.underdogScore
