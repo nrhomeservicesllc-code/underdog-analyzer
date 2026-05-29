@@ -330,6 +330,12 @@ export function BettingDashboard() {
             </div>
           )}
 
+          {data.isDemo && data.hasKey && (
+            <div className="bg-amber-950/30 border border-amber-800/40 rounded-lg px-3 py-2 text-center">
+              <p className="text-amber-400 text-xs font-semibold">Showing demo lines — API returned no games</p>
+              {data.apiError && <p className="text-amber-700 text-[11px] mt-0.5">{data.apiError}</p>}
+            </div>
+          )}
           {data.apiQuotaRemaining !== undefined && (
             <p className="text-[10px] text-zinc-800 text-center py-2">
               API quota: {data.apiQuotaRemaining.toLocaleString()} remaining

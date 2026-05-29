@@ -10,17 +10,20 @@ export const dynamic = "force-dynamic"
 
 export async function GET() {
   const apiKey = process.env.ODDS_API_KEY
-  const isDemo = !apiKey
+  const hasKey = !!apiKey
 
   try {
-    const allEvents: OddsApiEvent[] = []
+    let allEvents: OddsApiEvent[] = []
     const sportsFound: string[] = []
     let quota: number | undefined
     const liveScores = new Map<string, LiveScore>()
+    let isDemo = !hasKey
+    let apiError: string | undefined
 
-    if (isDemo) {
+    if (!hasKey) {
+      // No key — use demo data
       const demo = demoEvents()
-      allEvents.push(...demo)
+      allEvents = demo
       sportsFound.push(...[...new Set(demo.map((e) => e.sport_title))])
       const now = Date.now()
       for (const e of demo) {
@@ -29,56 +32,85 @@ export async function GET() {
         }
       }
     } else {
-      const client = getClient()
+      // Real API
+      try {
+        const client = getClient()
 
-      const available = await client.getSports()
-      const activeKeys = new Set(
-        available.filter((s) => s.active && !s.has_outrights).map((s) => s.key)
-      )
-
-      const prioritised = SPORT_PRIORITY.filter((k) => activeKeys.has(k))
-      const remaining = [...activeKeys].filter((k) => !SPORT_PRIORITY.includes(k))
-      const toFetch = [...prioritised, ...remaining]
-
-      // Fetch all sports' odds in parallel
-      const results = await Promise.allSettled(
-        toFetch.map((sport) => client.getOdds(sport))
-      )
-
-      for (const r of results) {
-        if (r.status !== "fulfilled") continue
-        quota = r.value.quota
-        allEvents.push(...r.value.events)
-        if (r.value.events.length) sportsFound.push(r.value.events[0].sport_title)
-      }
-
-      // Filter to games from today only (UTC window: past 12h → next 24h covers "today")
-      const now = Date.now()
-      const windowStart = now - 12 * 60 * 60 * 1000  // started up to 12h ago (might still be live)
-      const windowEnd = now + 24 * 60 * 60 * 1000    // starts within next 24h (today's slate)
-      const todayEvents = allEvents.filter((e) => {
-        const t = new Date(e.commence_time).getTime()
-        return t >= windowStart && t <= windowEnd
-      })
-      allEvents.length = 0
-      allEvents.push(...todayEvents)
-
-      // Identify sports with potentially-live games and fetch their live scores
-      const sportsNeedingScores = new Set<string>()
-      for (const e of allEvents) {
-        const start = new Date(e.commence_time).getTime()
-        if (start >= now) continue
-        const windowMs = (LIVE_WINDOW_MINUTES[e.sport_key] ?? 180) * 60_000
-        if (now - start < windowMs) sportsNeedingScores.add(e.sport_key)
-      }
-
-      if (sportsNeedingScores.size > 0) {
-        const scoreResults = await Promise.allSettled(
-          [...sportsNeedingScores].map((sport) => client.getLiveScores(sport))
+        const available = await client.getSports()
+        const activeKeys = new Set(
+          available.filter((s) => s.active && !s.has_outrights).map((s) => s.key)
         )
-        for (const r of scoreResults) {
-          if (r.status === "fulfilled") {
-            for (const [id, s] of r.value) liveScores.set(id, s)
+
+        const prioritised = SPORT_PRIORITY.filter((k) => activeKeys.has(k))
+        const remaining = [...activeKeys].filter((k) => !SPORT_PRIORITY.includes(k))
+        const toFetch = [...prioritised, ...remaining]
+
+        // Fetch all sports' odds in parallel
+        const results = await Promise.allSettled(
+          toFetch.map((sport) => client.getOdds(sport))
+        )
+
+        let anySuccess = false
+        for (const r of results) {
+          if (r.status !== "fulfilled") continue
+          anySuccess = true
+          quota = r.value.quota
+          allEvents.push(...r.value.events)
+          if (r.value.events.length) sportsFound.push(r.value.events[0].sport_title)
+        }
+
+        if (!anySuccess && toFetch.length > 0) {
+          // All API calls failed — capture why
+          const firstFail = results.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined
+          apiError = firstFail?.reason?.message ?? "All API calls failed"
+        }
+
+        if (allEvents.length > 0) {
+          // Filter to games from today only (UTC window: past 12h → next 24h)
+          const now = Date.now()
+          const windowStart = now - 12 * 60 * 60 * 1000
+          const windowEnd = now + 24 * 60 * 60 * 1000
+          allEvents = allEvents.filter((e) => {
+            const t = new Date(e.commence_time).getTime()
+            return t >= windowStart && t <= windowEnd
+          })
+
+          // Identify sports with potentially-live games and fetch their live scores
+          const sportsNeedingScores = new Set<string>()
+          const now2 = Date.now()
+          for (const e of allEvents) {
+            const start = new Date(e.commence_time).getTime()
+            if (start >= now2) continue
+            const windowMs = (LIVE_WINDOW_MINUTES[e.sport_key] ?? 180) * 60_000
+            if (now2 - start < windowMs) sportsNeedingScores.add(e.sport_key)
+          }
+
+          if (sportsNeedingScores.size > 0) {
+            const scoreResults = await Promise.allSettled(
+              [...sportsNeedingScores].map((sport) => client.getLiveScores(sport))
+            )
+            for (const r of scoreResults) {
+              if (r.status === "fulfilled") {
+                for (const [id, s] of r.value) liveScores.set(id, s)
+              }
+            }
+          }
+        }
+      } catch (err) {
+        // getSports() or other top-level failure — capture and fall through to demo
+        apiError = (err as Error).message
+      }
+
+      // If real API produced nothing, fall back to demo data
+      if (allEvents.length === 0) {
+        isDemo = true
+        const demo = demoEvents()
+        allEvents = demo
+        sportsFound.push(...[...new Set(demo.map((e) => e.sport_title))])
+        const now = Date.now()
+        for (const e of demo) {
+          if (new Date(e.commence_time).getTime() < now) {
+            liveScores.set(e.id, { homeScore: "—", awayScore: "—", lastUpdate: "" })
           }
         }
       }
@@ -108,6 +140,8 @@ export async function GET() {
       timestamp: new Date().toISOString(),
       needsSetup: false,
       isDemo,
+      hasKey,
+      apiError,
       sportsAnalyzed: sportsFound,
       totalGamesScanned: allEvents.length,
       liveGameCount: live.length,

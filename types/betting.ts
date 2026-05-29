@@ -78,6 +78,8 @@ export interface AnalysisResponse {
   timestamp: string
   needsSetup: boolean
   isDemo: boolean
+  hasKey?: boolean
+  apiError?: string
   sportsAnalyzed: string[]
   totalGamesScanned: number
   liveGameCount: number
