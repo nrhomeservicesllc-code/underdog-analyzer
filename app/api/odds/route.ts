@@ -11,10 +11,6 @@ export const dynamic = "force-dynamic"
 export async function GET() {
   const apiKey = process.env.ODDS_API_KEY?.trim()
   const hasKey = !!apiKey
-  // Partial key hint for debugging (safe to expose: first 6, last 4 chars)
-  const keyHint = apiKey
-    ? `${apiKey.slice(0, 6)}...${apiKey.slice(-4)} (${apiKey.length} chars)`
-    : null
 
   try {
     let allEvents: OddsApiEvent[] = []
@@ -65,7 +61,7 @@ export async function GET() {
           const firstFail = results.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined
           const raw = firstFail?.reason?.message ?? "All odds API calls failed"
           if (raw.includes("401")) {
-            apiError = `API key rejected (401 Unauthorized). Key on server: ${keyHint}. Fix: in Vercel → Settings → Environment Variables, delete ODDS_API_KEY and re-add it with the Production checkbox checked.`
+            apiError = `API key rejected (401 Unauthorized) — go to the-odds-api.com/manage, regenerate your key, then update ODDS_API_KEY in Vercel and redeploy.`
           } else if (raw.includes("422")) {
             apiError = `Monthly quota exhausted (422). Upgrade your plan at the-odds-api.com.`
           } else if (raw.includes("429")) {
@@ -107,7 +103,7 @@ export async function GET() {
       } catch (err) {
         const raw = (err as Error).message
         if (raw.includes("401")) {
-          apiError = `API key rejected (401 Unauthorized). Key on server: ${keyHint}. Fix: in Vercel → Settings → Environment Variables, delete ODDS_API_KEY and re-add it with the Production checkbox checked.`
+          apiError = `API key rejected (401 Unauthorized) — go to the-odds-api.com/manage, regenerate your key, then update ODDS_API_KEY in Vercel and redeploy.`
         } else {
           apiError = raw
         }
@@ -121,7 +117,6 @@ export async function GET() {
         needsSetup: false,
         isDemo: false,
         hasKey: true,
-        keyHint,
         apiError,
         sportsAnalyzed: [],
         totalGamesScanned: 0,
@@ -161,7 +156,6 @@ export async function GET() {
       needsSetup: false,
       isDemo: !hasKey,
       hasKey,
-      keyHint,
       apiError,
       sportsAnalyzed: sportsFound,
       totalGamesScanned: allEvents.length,

@@ -20,18 +20,9 @@ export interface LiveScore {
 export class OddsApiClient {
   constructor(private key: string) {}
 
-  // Returns sports list AND validates the key via x-requests-remaining header
   async getSports(): Promise<OddsApiSport[]> {
     const res = await fetch(`${BASE}/sports?api_key=${encodeURIComponent(this.key)}`, { cache: "no-store" })
     if (!res.ok) throw new Error(`Sports fetch failed: ${res.status}`)
-
-    // x-requests-remaining is only present on authenticated responses.
-    // If it's absent, the key wasn't recognized (sports list is public without auth).
-    const remaining = res.headers.get("x-requests-remaining")
-    if (remaining === null) {
-      throw new Error("401: API key not recognized — go to the-odds-api.com/manage to regenerate your key, then update ODDS_API_KEY in Vercel")
-    }
-
     return res.json()
   }
 

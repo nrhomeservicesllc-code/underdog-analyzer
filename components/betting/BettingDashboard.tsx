@@ -348,12 +348,6 @@ export function BettingDashboard() {
             <p className="text-white font-bold mb-1">API Key Issue</p>
             <p className="text-red-400 text-sm leading-relaxed">{data.apiError}</p>
           </div>
-          {data.keyHint && (
-            <div className="bg-zinc-900 rounded-lg px-3 py-2 text-left">
-              <p className="text-zinc-500 text-[10px] uppercase tracking-wider mb-1">Key received by server</p>
-              <p className="text-zinc-300 text-xs font-mono">{data.keyHint}</p>
-            </div>
-          )}
           <div className="bg-zinc-900 rounded-lg px-3 py-2.5 text-left space-y-1.5">
             <p className="text-zinc-400 text-[11px] font-bold uppercase tracking-wider">Fix checklist</p>
             <p className="text-zinc-500 text-xs">1. Vercel → Project → Settings → Environment Variables</p>
