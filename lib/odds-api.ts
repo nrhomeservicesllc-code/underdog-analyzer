@@ -20,18 +20,28 @@ export interface LiveScore {
 export class OddsApiClient {
   constructor(private key: string) {}
 
+  // Returns sports list AND validates the key via x-requests-remaining header
   async getSports(): Promise<OddsApiSport[]> {
-    const res = await fetch(`${BASE}/sports?apiKey=${this.key}`, { cache: "no-store" })
+    const res = await fetch(`${BASE}/sports?api_key=${encodeURIComponent(this.key)}`, { cache: "no-store" })
     if (!res.ok) throw new Error(`Sports fetch failed: ${res.status}`)
+
+    // x-requests-remaining is only present on authenticated responses.
+    // If it's absent, the key wasn't recognized (sports list is public without auth).
+    const remaining = res.headers.get("x-requests-remaining")
+    if (remaining === null) {
+      throw new Error("401: API key not recognized — go to the-odds-api.com/manage to regenerate your key, then update ODDS_API_KEY in Vercel")
+    }
+
     return res.json()
   }
 
   async getOdds(sport: string): Promise<{ events: OddsApiEvent[]; quota: number }> {
     const url = new URL(`${BASE}/sports/${sport}/odds`)
-    url.searchParams.set("apiKey", this.key)
-    url.searchParams.set("regions", "us,uk,eu,au")
+    url.searchParams.set("api_key", this.key)
+    url.searchParams.set("regions", "us,us2,uk,eu,au")
     url.searchParams.set("markets", "h2h")
     url.searchParams.set("oddsFormat", "american")
+    url.searchParams.set("dateFormat", "iso")
 
     const res = await fetch(url.toString(), { cache: "no-store" })
     if (!res.ok) throw new Error(`Odds fetch failed for ${sport}: ${res.status}`)
@@ -40,12 +50,12 @@ export class OddsApiClient {
     return { events: await res.json(), quota }
   }
 
-  // Returns confirmed-live event IDs + their current scores
   async getLiveScores(sport: string): Promise<Map<string, LiveScore>> {
     try {
       const url = new URL(`${BASE}/sports/${sport}/scores`)
-      url.searchParams.set("apiKey", this.key)
+      url.searchParams.set("api_key", this.key)
       url.searchParams.set("daysFrom", "1")
+      url.searchParams.set("dateFormat", "iso")
 
       const res = await fetch(url.toString(), { cache: "no-store" })
       if (!res.ok) return new Map()
@@ -73,7 +83,7 @@ export class OddsApiClient {
 }
 
 export function getClient() {
-  const key = process.env.ODDS_API_KEY
+  const key = process.env.ODDS_API_KEY?.trim()
   if (!key) throw new Error("ODDS_API_KEY not set")
   return new OddsApiClient(key)
 }
