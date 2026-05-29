@@ -76,6 +76,7 @@ export interface BetAnalysis {
 export interface AnalysisResponse {
   timestamp: string
   needsSetup: boolean
+  isDemo: boolean
   sportsAnalyzed: string[]
   totalGamesScanned: number
   liveGameCount: number

@@ -1,43 +1,46 @@
 import { NextResponse } from "next/server"
 import { getClient, SPORT_PRIORITY, isEventLive } from "@/lib/odds-api"
 import { analyzeAll } from "@/lib/analyzer"
+import { demoEvents } from "@/lib/demo"
 import type { OddsApiEvent } from "@/types/betting"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function GET() {
-  if (!process.env.ODDS_API_KEY) {
-    return NextResponse.json({ needsSetup: true }, {
-      headers: { "Cache-Control": "no-store, max-age=0" },
-    })
-  }
+  const isDemo = !process.env.ODDS_API_KEY
 
   try {
-    const client = getClient()
-    const events: OddsApiEvent[] = []
+    let events: OddsApiEvent[] = []
     let quota: number | undefined
     const sportsFound: string[] = []
 
-    const available = await client.getSports()
-    const activeKeys = new Set(
-      available.filter((s) => s.active && !s.has_outrights).map((s) => s.key)
-    )
+    if (isDemo) {
+      events = demoEvents()
+      sportsFound.push(...[...new Set(events.map((e) => e.sport_title))])
+    } else {
+      const client = getClient()
 
-    const prioritised = SPORT_PRIORITY.filter((k) => activeKeys.has(k))
-    const remaining = [...activeKeys].filter((k) => !SPORT_PRIORITY.includes(k))
-    const toFetch = [...prioritised, ...remaining].slice(0, 30)
+      const available = await client.getSports()
+      const activeKeys = new Set(
+        available.filter((s) => s.active && !s.has_outrights).map((s) => s.key)
+      )
 
-    const results = await Promise.allSettled(
-      toFetch.map((sport) => client.getOdds(sport))
-    )
+      const prioritised = SPORT_PRIORITY.filter((k) => activeKeys.has(k))
+      const remaining = [...activeKeys].filter((k) => !SPORT_PRIORITY.includes(k))
+      const toFetch = [...prioritised, ...remaining].slice(0, 30)
 
-    for (const r of results) {
-      if (r.status !== "fulfilled") continue
-      quota = r.value.quota
-      events.push(...r.value.events)
-      if (r.value.events.length) {
-        sportsFound.push(r.value.events[0].sport_title)
+      const results = await Promise.allSettled(
+        toFetch.map((sport) => client.getOdds(sport))
+      )
+
+      for (const r of results) {
+        if (r.status !== "fulfilled") continue
+        quota = r.value.quota
+        events.push(...r.value.events)
+        if (r.value.events.length) {
+          sportsFound.push(r.value.events[0].sport_title)
+        }
       }
     }
 
@@ -63,6 +66,7 @@ export async function GET() {
     return NextResponse.json({
       timestamp: new Date().toISOString(),
       needsSetup: false,
+      isDemo,
       sportsAnalyzed: sportsFound,
       totalGamesScanned: events.length,
       liveGameCount: events.filter((e) => isEventLive(e.commence_time, e.sport_key)).length,
