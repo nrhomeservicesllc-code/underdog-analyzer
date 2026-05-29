@@ -42,9 +42,11 @@ export class OddsApiClient {
       if (!res.ok) return new Set()
 
       const data: ScoreEvent[] = await res.json()
-      // scores !== null means the game has started; completed === false means still in progress
+      // scores must be a non-empty array (game has actual score data) and not completed
       return new Set(
-        data.filter((e) => e.scores !== null && !e.completed).map((e) => e.id)
+        data
+          .filter((e) => Array.isArray(e.scores) && e.scores.length > 0 && !e.completed)
+          .map((e) => e.id)
       )
     } catch {
       return new Set()
@@ -99,6 +101,13 @@ export const LIVE_WINDOW_MINUTES: Record<string, number> = {
   rugbyunion_super_rugby: 120,
   aussierules_afl: 150,
   darts_betway_premier_league: 120,
+  esports_lol: 180,
+  esports_csgo: 180,
+  esports_dota_2: 180,
+  esports_valorant: 180,
+  esports_r6: 180,
+  esports_overwatch: 180,
+  esports_kog: 180,
 }
 
 export function isEventLive(commenceTime: string, sportKey: string): boolean {
@@ -156,4 +165,12 @@ export const SPORT_PRIORITY = [
   "cricket_t20",
   "darts_betway_premier_league",
   "icehockey_sweden_hockey_league",
+  // Esports
+  "esports_lol",
+  "esports_csgo",
+  "esports_dota_2",
+  "esports_valorant",
+  "esports_r6",
+  "esports_overwatch",
+  "esports_kog",
 ]
