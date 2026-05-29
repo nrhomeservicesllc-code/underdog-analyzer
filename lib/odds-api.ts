@@ -4,15 +4,24 @@ const BASE = "https://api.the-odds-api.com/v4"
 
 export interface ScoreEvent {
   id: string
+  home_team: string
+  away_team: string
   completed: boolean
   scores: { name: string; score: string }[] | null
+  last_update: string | null
+}
+
+export interface LiveScore {
+  homeScore: string
+  awayScore: string
+  lastUpdate: string
 }
 
 export class OddsApiClient {
   constructor(private key: string) {}
 
   async getSports(): Promise<OddsApiSport[]> {
-    const res = await fetch(`${BASE}/sports?apiKey=${this.key}`, { next: { revalidate: 300 } })
+    const res = await fetch(`${BASE}/sports?apiKey=${this.key}`, { cache: "no-store" })
     if (!res.ok) throw new Error(`Sports fetch failed: ${res.status}`)
     return res.json()
   }
@@ -24,32 +33,41 @@ export class OddsApiClient {
     url.searchParams.set("markets", "h2h")
     url.searchParams.set("oddsFormat", "american")
 
-    const res = await fetch(url.toString(), { next: { revalidate: 45 } })
+    const res = await fetch(url.toString(), { cache: "no-store" })
     if (!res.ok) throw new Error(`Odds fetch failed for ${sport}: ${res.status}`)
 
     const quota = parseInt(res.headers.get("x-requests-remaining") ?? "0")
     return { events: await res.json(), quota }
   }
 
-  // Returns a Set of event IDs that are confirmed live (started, not completed)
-  async getLiveEventIds(sport: string): Promise<Set<string>> {
+  // Returns confirmed-live event IDs + their current scores
+  async getLiveScores(sport: string): Promise<Map<string, LiveScore>> {
     try {
       const url = new URL(`${BASE}/sports/${sport}/scores`)
       url.searchParams.set("apiKey", this.key)
       url.searchParams.set("daysFrom", "1")
 
       const res = await fetch(url.toString(), { cache: "no-store" })
-      if (!res.ok) return new Set()
+      if (!res.ok) return new Map()
 
       const data: ScoreEvent[] = await res.json()
-      // scores must be a non-empty array (game has actual score data) and not completed
-      return new Set(
-        data
-          .filter((e) => Array.isArray(e.scores) && e.scores.length > 0 && !e.completed)
-          .map((e) => e.id)
-      )
+      const result = new Map<string, LiveScore>()
+
+      for (const e of data) {
+        if (!Array.isArray(e.scores) || e.scores.length < 2 || e.completed) continue
+        const home = e.scores.find((s) => s.name === e.home_team)
+        const away = e.scores.find((s) => s.name === e.away_team)
+        if (!home || !away) continue
+        result.set(e.id, {
+          homeScore: home.score,
+          awayScore: away.score,
+          lastUpdate: e.last_update ?? "",
+        })
+      }
+
+      return result
     } catch {
-      return new Set()
+      return new Map()
     }
   }
 }
@@ -60,7 +78,7 @@ export function getClient() {
   return new OddsApiClient(key)
 }
 
-// How long a game stays "live" after commence_time (minutes)
+// How long after start we still consider a game "live" (fallback only — Scores API is authoritative)
 export const LIVE_WINDOW_MINUTES: Record<string, number> = {
   basketball_nba: 150,
   basketball_ncaab: 150,
@@ -110,17 +128,7 @@ export const LIVE_WINDOW_MINUTES: Record<string, number> = {
   esports_kog: 180,
 }
 
-export function isEventLive(commenceTime: string, sportKey: string): boolean {
-  const now = Date.now()
-  const start = new Date(commenceTime).getTime()
-  if (start > now) return false
-  const windowMs = (LIVE_WINDOW_MINUTES[sportKey] ?? 180) * 60_000
-  return now - start < windowMs
-}
-
-// Ordered by global betting volume — most liquid markets first
 export const SPORT_PRIORITY = [
-  // High volume, year-round
   "soccer_epl",
   "soccer_spain_la_liga",
   "soccer_germany_bundesliga",
@@ -135,14 +143,12 @@ export const SPORT_PRIORITY = [
   "soccer_turkey_super_league",
   "soccer_uefa_champs_league",
   "soccer_uefa_europa_league",
-  // US major sports
   "basketball_nba",
   "baseball_mlb",
   "icehockey_nhl",
   "americanfootball_nfl",
   "basketball_ncaab",
   "americanfootball_ncaaf",
-  // Tennis (Grand Slams + tour events)
   "tennis_atp_french_open",
   "tennis_wta_french_open",
   "tennis_atp_wimbledon",
@@ -151,10 +157,8 @@ export const SPORT_PRIORITY = [
   "tennis_wta_us_open",
   "tennis_atp_australian_open",
   "tennis_wta_australian_open",
-  // Combat sports
   "mma_mixed_martial_arts",
   "boxing_boxing",
-  // Other
   "basketball_euroleague",
   "rugbyleague_nrl",
   "rugbyunion_premiership",
@@ -165,7 +169,6 @@ export const SPORT_PRIORITY = [
   "cricket_t20",
   "darts_betway_premier_league",
   "icehockey_sweden_hockey_league",
-  // Esports
   "esports_lol",
   "esports_csgo",
   "esports_dota_2",

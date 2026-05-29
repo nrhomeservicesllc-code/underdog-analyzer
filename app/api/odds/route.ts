@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { getClient, SPORT_PRIORITY, LIVE_WINDOW_MINUTES } from "@/lib/odds-api"
+import type { LiveScore } from "@/lib/odds-api"
 import { analyzeAll } from "@/lib/analyzer"
 import { demoEvents } from "@/lib/demo"
 import type { OddsApiEvent } from "@/types/betting"
@@ -12,18 +13,20 @@ export async function GET() {
   const isDemo = !apiKey
 
   try {
-    const events: OddsApiEvent[] = []
+    const allEvents: OddsApiEvent[] = []
     const sportsFound: string[] = []
     let quota: number | undefined
-    const confirmedLive = new Set<string>()
+    const liveScores = new Map<string, LiveScore>()
 
     if (isDemo) {
       const demo = demoEvents()
-      events.push(...demo)
+      allEvents.push(...demo)
       sportsFound.push(...[...new Set(demo.map((e) => e.sport_title))])
       const now = Date.now()
       for (const e of demo) {
-        if (new Date(e.commence_time).getTime() < now) confirmedLive.add(e.id)
+        if (new Date(e.commence_time).getTime() < now) {
+          liveScores.set(e.id, { homeScore: "—", awayScore: "—", lastUpdate: "" })
+        }
       }
     } else {
       const client = getClient()
@@ -37,6 +40,7 @@ export async function GET() {
       const remaining = [...activeKeys].filter((k) => !SPORT_PRIORITY.includes(k))
       const toFetch = [...prioritised, ...remaining]
 
+      // Fetch all sports' odds in parallel
       const results = await Promise.allSettled(
         toFetch.map((sport) => client.getOdds(sport))
       )
@@ -44,16 +48,24 @@ export async function GET() {
       for (const r of results) {
         if (r.status !== "fulfilled") continue
         quota = r.value.quota
-        events.push(...r.value.events)
-        if (r.value.events.length) {
-          sportsFound.push(r.value.events[0].sport_title)
-        }
+        allEvents.push(...r.value.events)
+        if (r.value.events.length) sportsFound.push(r.value.events[0].sport_title)
       }
 
-      // Confirm which games are truly live via the Scores API
+      // Filter to games from today only (UTC window: past 12h → next 24h covers "today")
       const now = Date.now()
+      const windowStart = now - 12 * 60 * 60 * 1000  // started up to 12h ago (might still be live)
+      const windowEnd = now + 24 * 60 * 60 * 1000    // starts within next 24h (today's slate)
+      const todayEvents = allEvents.filter((e) => {
+        const t = new Date(e.commence_time).getTime()
+        return t >= windowStart && t <= windowEnd
+      })
+      allEvents.length = 0
+      allEvents.push(...todayEvents)
+
+      // Identify sports with potentially-live games and fetch their live scores
       const sportsNeedingScores = new Set<string>()
-      for (const e of events) {
+      for (const e of allEvents) {
         const start = new Date(e.commence_time).getTime()
         if (start >= now) continue
         const windowMs = (LIVE_WINDOW_MINUTES[e.sport_key] ?? 180) * 60_000
@@ -62,23 +74,24 @@ export async function GET() {
 
       if (sportsNeedingScores.size > 0) {
         const scoreResults = await Promise.allSettled(
-          [...sportsNeedingScores].map((sport) => client.getLiveEventIds(sport))
+          [...sportsNeedingScores].map((sport) => client.getLiveScores(sport))
         )
         for (const r of scoreResults) {
           if (r.status === "fulfilled") {
-            for (const id of r.value) confirmedLive.add(id)
+            for (const [id, s] of r.value) liveScores.set(id, s)
           }
         }
       }
     }
 
-    const analyses = analyzeAll(events, confirmedLive)
+    const analyses = analyzeAll(allEvents, liveScores)
     const live = analyses.filter((a) => a.isLive)
+    const upcoming = analyses.filter((a) => !a.isLive)
     const positive = analyses.filter((a) => a.expectedValuePct > 0)
     const strong = analyses.filter((a) => a.recommendation === "STRONG BUY")
 
     let totalVig = 0, vigCount = 0
-    for (const e of events) {
+    for (const e of allEvents) {
       for (const book of e.bookmakers ?? []) {
         const market = book.markets.find((m) => m.key === "h2h")
         if (!market || market.outcomes.length < 2) continue
@@ -96,10 +109,11 @@ export async function GET() {
       needsSetup: false,
       isDemo,
       sportsAnalyzed: sportsFound,
-      totalGamesScanned: events.length,
+      totalGamesScanned: allEvents.length,
       liveGameCount: live.length,
       totalBetsAnalyzed: analyses.length,
       liveAnalyses: live,
+      upcomingAnalyses: upcoming,
       topUnderdog: live[0] ?? analyses[0] ?? null,
       allAnalyses: analyses,
       marketStats: {

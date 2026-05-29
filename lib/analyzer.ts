@@ -135,12 +135,27 @@ export function analyzeEvent(event: OddsApiEvent): BetAnalysis | null {
   }
 }
 
-export function analyzeAll(events: OddsApiEvent[], confirmedLive?: Set<string>): BetAnalysis[] {
-  const tagged = confirmedLive
-    ? events.map((e) => ({ ...e, _confirmedLive: confirmedLive.has(e.id) }))
+import type { LiveScore } from "./odds-api"
+
+export function analyzeAll(
+  events: OddsApiEvent[],
+  liveScores?: Map<string, LiveScore>
+): BetAnalysis[] {
+  const tagged = liveScores
+    ? events.map((e) => {
+        const score = liveScores.get(e.id)
+        return { ...e, _confirmedLive: !!score, _liveScore: score }
+      })
     : events
+
   return tagged
-    .map(analyzeEvent)
+    .map((e) => {
+      const result = analyzeEvent(e)
+      if (!result) return null
+      const s = (e as OddsApiEvent & { _liveScore?: LiveScore })._liveScore
+      if (s) result.currentScore = { homeScore: s.homeScore, awayScore: s.awayScore }
+      return result
+    })
     .filter((a): a is BetAnalysis => a !== null)
     .sort((a, b) => {
       if (a.isLive && !b.isLive) return -1

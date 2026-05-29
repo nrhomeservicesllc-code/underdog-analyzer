@@ -2,23 +2,191 @@
 
 import { useState, useEffect, useCallback, useRef } from "react"
 import type { AnalysisResponse, BetAnalysis, TrackedBet } from "@/types/betting"
-import { UnderdogCard } from "./UnderdogCard"
 import { BetTracker } from "./BetTracker"
 import { loadBets, trackBet, untrackBet, isTracked, calcRecord } from "@/lib/tracker"
 
-const LIVE_INTERVAL_MS = 30_000
-const IDLE_INTERVAL_MS = 90_000
+const LIVE_INTERVAL_MS = 20_000   // 20s when live games active
+const IDLE_INTERVAL_MS = 60_000   // 60s when no live games
 
-function fmt(n: number) { return n > 0 ? `+${n}` : `${n}` }
+function fmtAmerican(n: number) { return n > 0 ? `+${n}` : `${n}` }
+
+const REC_STYLES: Record<string, string> = {
+  "STRONG BUY": "bg-emerald-500 text-black",
+  "BUY":        "bg-blue-500 text-white",
+  "WATCH":      "bg-amber-500/80 text-black",
+  "AVOID":      "bg-zinc-700 text-zinc-400",
+}
+
+// Odds movement: positive = odds got BETTER for bettor (more positive / less negative)
+function oddsDir(curr: number, prev: number | undefined): "up" | "down" | null {
+  if (prev === undefined) return null
+  if (curr > prev) return "up"
+  if (curr < prev) return "down"
+  return null
+}
+
+function OddsBox({
+  odds, dir, highlight,
+}: { odds: number; dir: "up" | "down" | null; highlight: boolean }) {
+  const base = highlight ? "bg-emerald-900/60 border-emerald-500/40 text-emerald-300" : "bg-zinc-900 border-zinc-700 text-zinc-300"
+  const flash = dir === "up" ? "ring-1 ring-emerald-400" : dir === "down" ? "ring-1 ring-red-400" : ""
+  return (
+    <div className={`flex items-center gap-1 px-3 py-1.5 rounded border font-mono font-bold text-sm min-w-[72px] justify-center ${base} ${flash} transition-all duration-300`}>
+      {fmtAmerican(odds)}
+      {dir === "up" && <span className="text-emerald-400 text-xs">↑</span>}
+      {dir === "down" && <span className="text-red-400 text-xs">↓</span>}
+    </div>
+  )
+}
+
+function GameCard({
+  analysis,
+  prevOdds,
+  tracked,
+  onTrack,
+}: {
+  analysis: BetAnalysis
+  prevOdds?: { fav: number; ud: number }
+  tracked: boolean
+  onTrack: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const fav = analysis.favoriteTeam
+  const ud = analysis.underdogTeam
+  const score = analysis.currentScore
+  const evPositive = analysis.expectedValuePct > 0
+
+  // Determine score for home vs away
+  const homeIsUD = ud.isHome
+  const homeScore = homeIsUD ? score?.homeScore : score?.homeScore
+  const awayScore = homeIsUD ? score?.awayScore : score?.awayScore
+
+  const favIsHome = fav.isHome
+  const favScore = favIsHome ? score?.homeScore : score?.awayScore
+  const udScore = homeIsUD ? score?.homeScore : score?.awayScore
+
+  const favDir = oddsDir(fav.bestAmericanOdds, prevOdds?.fav)
+  const udDir = oddsDir(ud.bestAmericanOdds, prevOdds?.ud)
+
+  return (
+    <div className={`rounded-xl overflow-hidden border transition-colors ${
+      tracked ? "border-amber-500/50" : "border-zinc-800"
+    }`}>
+      {/* Sport + status bar */}
+      <div className="flex items-center justify-between px-3 py-1.5 bg-zinc-950 border-b border-zinc-800">
+        <div className="flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
+          <span className="text-red-400 text-[11px] font-black uppercase tracking-wider">LIVE</span>
+          <span className="text-zinc-600 text-[11px]">·</span>
+          <span className="text-zinc-500 text-[11px] font-medium uppercase tracking-wide">{analysis.sportTitle}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          {tracked && <span className="text-amber-400 text-[10px] font-bold uppercase">Tracking</span>}
+          <span className={`text-[10px] font-black px-2 py-0.5 rounded uppercase tracking-wide ${REC_STYLES[analysis.recommendation]}`}>
+            {analysis.recommendation}
+          </span>
+        </div>
+      </div>
+
+      {/* Teams + odds — Vegas betting line style */}
+      <div className="bg-black">
+        {/* Favorite row */}
+        <div className="flex items-center px-3 py-2.5 border-b border-zinc-900">
+          <div className="flex-1 min-w-0">
+            <span className="text-zinc-400 text-sm font-medium truncate block">{fav.team}</span>
+          </div>
+          {score && (
+            <span className="text-zinc-300 text-lg font-black w-8 text-center mr-3 tabular-nums">{favScore}</span>
+          )}
+          <OddsBox odds={fav.bestAmericanOdds} dir={favDir} highlight={false} />
+        </div>
+
+        {/* Underdog row — highlighted */}
+        <div className="flex items-center px-3 py-2.5 bg-emerald-950/20">
+          <div className="flex-1 min-w-0">
+            <span className="text-white text-sm font-bold truncate block">{ud.team}</span>
+            <span className="text-emerald-500/70 text-[10px]">← underdog</span>
+          </div>
+          {score && (
+            <span className="text-emerald-300 text-lg font-black w-8 text-center mr-3 tabular-nums">{udScore}</span>
+          )}
+          <OddsBox odds={ud.bestAmericanOdds} dir={udDir} highlight={true} />
+        </div>
+      </div>
+
+      {/* Stats bar */}
+      <div className="px-3 py-2 bg-zinc-950 flex items-center gap-4 text-xs border-t border-zinc-900">
+        <span className="text-zinc-500">
+          Win prob <span className="text-white font-bold">{(analysis.consensusProbability * 100).toFixed(0)}%</span>
+        </span>
+        <span className={`font-bold ${evPositive ? "text-emerald-400" : "text-red-400"}`}>
+          EV {evPositive ? "+" : ""}{analysis.expectedValuePct.toFixed(1)}%
+        </span>
+        <span className="text-zinc-600">
+          $100 → <span className="text-zinc-400">${((ud.bestDecimalOdds - 1) * 100).toFixed(0)}</span>
+        </span>
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={() => setOpen((o) => !o)}
+            className="text-zinc-600 hover:text-zinc-400 text-xs"
+          >
+            {open ? "▲ less" : "▼ more"}
+          </button>
+          <button
+            onClick={onTrack}
+            className={`text-xs px-2.5 py-1 rounded font-bold transition-colors ${
+              tracked
+                ? "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                : "bg-emerald-600 hover:bg-emerald-500 text-white"
+            }`}
+          >
+            {tracked ? "Tracking" : "+ Track"}
+          </button>
+        </div>
+      </div>
+
+      {/* Expanded: all book odds */}
+      {open && (
+        <div className="bg-zinc-950 border-t border-zinc-900 px-3 py-3 space-y-3">
+          <div>
+            <div className="text-[10px] text-zinc-600 uppercase tracking-widest mb-2">Underdog odds — {ud.team}</div>
+            <div className="space-y-1">
+              {ud.allOdds.map((o) => (
+                <div key={o.bookmaker} className="flex items-center justify-between">
+                  <span className="text-zinc-500 text-xs">{o.bookmaker}</span>
+                  <span className={`text-xs font-bold font-mono ${
+                    o.decimal === ud.bestDecimalOdds ? "text-emerald-400" : "text-zinc-400"
+                  }`}>
+                    {fmtAmerican(o.american)}
+                    {o.decimal === ud.bestDecimalOdds && <span className="text-emerald-600 text-[10px] ml-1">BEST</span>}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+          {analysis.analysisNotes.length > 0 && (
+            <div className="space-y-1 pt-2 border-t border-zinc-900">
+              {analysis.analysisNotes.map((n, i) => (
+                <p key={i} className="text-zinc-500 text-xs leading-relaxed">▸ {n}</p>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export function BettingDashboard() {
   const [data, setData] = useState<AnalysisResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<"picks" | "record">("picks")
-  const [expanded, setExpanded] = useState<string | null>(null)
-  const [refreshed, setRefreshed] = useState<Date | null>(null)
   const [trackedBets, setTrackedBets] = useState<TrackedBet[]>([])
+  const [refreshed, setRefreshed] = useState<Date | null>(null)
+  // Odds movement tracking
+  const prevOddsRef = useRef<Map<string, { fav: number; ud: number }>>(new Map())
+  const [oddsMovement, setOddsMovement] = useState<Map<string, { fav: number; ud: number }>>(new Map())
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => { setTrackedBets(loadBets()) }, [])
@@ -29,8 +197,20 @@ export function BettingDashboard() {
     setError(null)
     try {
       const res = await fetch("/api/odds")
-      const json = await res.json()
-      if (json.error) throw new Error(json.error)
+      const json: AnalysisResponse = await res.json()
+      if ((json as { error?: string }).error) throw new Error((json as { error?: string }).error)
+
+      // Compute odds movement vs previous load
+      const snap = new Map<string, { fav: number; ud: number }>()
+      for (const a of json.allAnalyses) {
+        snap.set(a.eventId, {
+          fav: a.favoriteTeam.bestAmericanOdds,
+          ud: a.underdogTeam.bestAmericanOdds,
+        })
+      }
+      setOddsMovement(new Map(prevOddsRef.current))
+      prevOddsRef.current = snap
+
       setData(json)
       setRefreshed(new Date())
     } catch (e) {
@@ -50,23 +230,19 @@ export function BettingDashboard() {
   }, [load, data?.marketStats.liveCount])
 
   function handleTrack(analysis: BetAnalysis) {
-    if (isTracked(analysis.eventId, trackedBets)) {
-      untrackBet(analysis.eventId)
-    } else {
-      trackBet(analysis)
-    }
+    if (isTracked(analysis.eventId, trackedBets)) untrackBet(analysis.eventId)
+    else trackBet(analysis)
     reloadBets()
   }
 
   const rec = calcRecord(trackedBets)
-  const hasRecord = trackedBets.length > 0
 
   if (loading && !data) {
     return (
-      <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
+      <div className="min-h-screen bg-black flex items-center justify-center">
         <div className="text-center space-y-3">
-          <div className="w-10 h-10 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto" />
-          <p className="text-zinc-400 text-sm">Scanning live markets across all sports…</p>
+          <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto" />
+          <p className="text-zinc-500 text-sm">Scanning live lines…</p>
         </div>
       </div>
     )
@@ -74,10 +250,10 @@ export function BettingDashboard() {
 
   if (error) {
     return (
-      <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4">
-        <div className="bg-zinc-900 rounded-2xl border border-zinc-800 p-6 max-w-sm text-center space-y-3">
+      <div className="min-h-screen bg-black flex items-center justify-center p-4">
+        <div className="bg-zinc-950 rounded-xl border border-zinc-800 p-6 max-w-sm text-center space-y-3">
           <p className="text-red-400 text-sm">{error}</p>
-          <button onClick={load} className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-emerald-500">Retry</button>
+          <button onClick={load} className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-emerald-500">Retry</button>
         </div>
       </div>
     )
@@ -86,60 +262,54 @@ export function BettingDashboard() {
   if (!data) return null
 
   const liveGames = data.allAnalyses.filter((a) => a.isLive)
-  const topPicks = data.allAnalyses
-    .filter((a) => !a.isLive && (a.recommendation === "STRONG BUY" || a.recommendation === "BUY"))
   const hasLive = liveGames.length > 0
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-white">
-      {/* Header */}
-      <header className="border-b border-zinc-800 bg-zinc-950/90 backdrop-blur sticky top-0 z-10">
-        <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
+    <div className="min-h-screen bg-black text-white font-sans">
+      {/* Header — Vegas scoreboard style */}
+      <header className="bg-zinc-950 border-b border-zinc-800 sticky top-0 z-20">
+        <div className="max-w-2xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <h1 className="text-lg font-black tracking-tight">
-              Underdog<span className="text-emerald-400">.</span>
-            </h1>
-            {hasLive && (
-              <span className="flex items-center gap-1.5 text-xs font-bold bg-red-500/20 text-red-400 border border-red-500/30 px-2 py-0.5 rounded-full animate-pulse">
-                <span className="w-1.5 h-1.5 rounded-full bg-red-400 inline-block" />
-                {liveGames.length} LIVE
+            <span className="text-xl font-black tracking-tight text-white">
+              Sharp<span className="text-emerald-400">Dog</span>
+            </span>
+            {hasLive ? (
+              <span className="flex items-center gap-1.5 bg-red-500/20 border border-red-500/40 text-red-400 text-[11px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full animate-pulse">
+                <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                {liveGames.length} Live
               </span>
+            ) : (
+              <span className="text-zinc-700 text-[11px] uppercase tracking-wide">No live games</span>
             )}
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-xs text-zinc-600">
-              {data.totalGamesScanned} games · {refreshed?.toLocaleTimeString()}
-            </span>
+            <span className="text-zinc-700 text-xs tabular-nums">{refreshed?.toLocaleTimeString()}</span>
             <button onClick={load} disabled={loading}
-              className="text-xs px-2.5 py-1 rounded-lg bg-zinc-800 text-zinc-400 hover:bg-zinc-700 disabled:opacity-40">
-              {loading ? "…" : "↻"}
+              className="w-7 h-7 flex items-center justify-center rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-400 disabled:opacity-30 text-sm">
+              {loading ? <span className="w-3 h-3 border border-zinc-500 border-t-transparent rounded-full animate-spin" /> : "↻"}
             </button>
           </div>
         </div>
 
-        {/* Tab bar */}
-        <div className="max-w-4xl mx-auto px-4 flex gap-1 pb-0">
+        {/* Tabs */}
+        <div className="max-w-2xl mx-auto px-4 flex border-t border-zinc-900">
           <button
             onClick={() => setTab("picks")}
-            className={`px-4 py-2 text-sm font-semibold border-b-2 transition-colors ${
-              tab === "picks"
-                ? "border-emerald-400 text-white"
-                : "border-transparent text-zinc-500 hover:text-zinc-300"
+            className={`px-4 py-2.5 text-sm font-bold border-b-2 transition-colors ${
+              tab === "picks" ? "border-emerald-400 text-white" : "border-transparent text-zinc-600 hover:text-zinc-400"
             }`}
           >
-            Picks
+            Live Lines
           </button>
           <button
             onClick={() => setTab("record")}
-            className={`px-4 py-2 text-sm font-semibold border-b-2 transition-colors flex items-center gap-2 ${
-              tab === "record"
-                ? "border-emerald-400 text-white"
-                : "border-transparent text-zinc-500 hover:text-zinc-300"
+            className={`px-4 py-2.5 text-sm font-bold border-b-2 transition-colors flex items-center gap-2 ${
+              tab === "record" ? "border-emerald-400 text-white" : "border-transparent text-zinc-600 hover:text-zinc-400"
             }`}
           >
             My Record
-            {hasRecord && (
-              <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${
+            {trackedBets.length > 0 && (
+              <span className={`text-[10px] font-black px-1.5 py-0.5 rounded tabular-nums ${
                 rec.pnl >= 0 ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400"
               }`}>
                 {rec.wins}W-{rec.losses}L
@@ -149,134 +319,64 @@ export function BettingDashboard() {
         </div>
       </header>
 
-      {/* PICKS TAB */}
+      {/* LIVE LINES TAB */}
       {tab === "picks" && (
-        <main className="max-w-4xl mx-auto px-4 py-5 space-y-6">
-
-          {/* Stats strip */}
-          <div className="grid grid-cols-4 gap-2">
+        <main className="max-w-2xl mx-auto px-4 py-4 space-y-3">
+          {/* Quick stats */}
+          <div className="grid grid-cols-4 gap-2 text-center">
             {[
-              { label: "Live Now", val: liveGames.length, color: liveGames.length > 0 ? "text-red-400" : "text-zinc-400" },
-              { label: "+EV Picks", val: data.marketStats.positiveEvCount, color: "text-emerald-400" },
-              { label: "Strong Buy", val: data.marketStats.strongBuyCount, color: "text-white" },
-              { label: "Sports", val: data.sportsAnalyzed.length, color: "text-zinc-300" },
+              { v: liveGames.length, l: "Live Now", c: liveGames.length > 0 ? "text-red-400" : "text-zinc-600" },
+              { v: data.marketStats.positiveEvCount, l: "+EV", c: "text-emerald-400" },
+              { v: data.marketStats.strongBuyCount, l: "Strong Buy", c: "text-white" },
+              { v: data.totalGamesScanned, l: "Games", c: "text-zinc-400" },
             ].map((s) => (
-              <div key={s.label} className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 text-center">
-                <div className={`text-xl font-black ${s.color}`}>{s.val}</div>
-                <div className="text-[10px] text-zinc-500 mt-0.5 uppercase tracking-wide">{s.label}</div>
+              <div key={s.l} className="bg-zinc-950 border border-zinc-900 rounded-lg py-2">
+                <div className={`text-lg font-black tabular-nums ${s.c}`}>{s.v}</div>
+                <div className="text-[10px] text-zinc-600 uppercase tracking-wide">{s.l}</div>
               </div>
             ))}
           </div>
 
-          {/* LIVE GAMES SECTION */}
-          {liveGames.length > 0 ? (
-            <section>
-              <div className="flex items-center gap-2 mb-3">
-                <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse inline-block" />
-                <h2 className="text-sm font-bold text-red-400 uppercase tracking-widest">Live Right Now</h2>
-                <span className="text-xs text-zinc-600">{liveGames.length} game{liveGames.length !== 1 ? "s" : ""} in progress</span>
+          {liveGames.length === 0 ? (
+            <div className="bg-zinc-950 border border-zinc-900 rounded-xl p-10 text-center space-y-2">
+              <div className="text-4xl">🕐</div>
+              <p className="text-zinc-400 font-semibold">No live games right now</p>
+              <p className="text-zinc-600 text-sm">
+                Lines update every {Math.round(IDLE_INTERVAL_MS / 1000)}s · {data.totalGamesScanned} games on today's slate
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center gap-2 py-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+                <span className="text-xs text-zinc-500 uppercase tracking-widest font-bold">Live Betting Lines — {liveGames.length} games in progress</span>
               </div>
-              <div className="space-y-3">
-                {liveGames.map((a, i) => (
-                  <UnderdogCard
+              {liveGames.map((a) => {
+                const prev = oddsMovement.get(a.eventId)
+                return (
+                  <GameCard
                     key={a.eventId}
                     analysis={a}
-                    rank={i + 1}
-                    expanded={expanded === a.eventId}
+                    prevOdds={prev}
                     tracked={isTracked(a.eventId, trackedBets)}
-                    onToggle={() => setExpanded((p) => p === a.eventId ? null : a.eventId)}
                     onTrack={() => handleTrack(a)}
                   />
-                ))}
-              </div>
-            </section>
-          ) : (
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 px-4 py-3 flex items-center gap-3">
-              <span className="w-2 h-2 rounded-full bg-zinc-600 inline-block" />
-              <span className="text-sm text-zinc-500">No live games right now — refreshing automatically</span>
-            </div>
+                )
+              })}
+            </>
           )}
 
-          {/* TOP PICKS SECTION */}
-          <section>
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-bold text-white uppercase tracking-widest">Top Underdog Picks</h2>
-              <span className="text-xs text-zinc-600">Strong Buy + Buy only</span>
-            </div>
-
-            {topPicks.length === 0 ? (
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6 text-center">
-                <p className="text-zinc-500 text-sm">No strong picks available right now. Check back soon.</p>
-              </div>
-            ) : (
-              <>
-                {/* Hero: best pick */}
-                {(() => {
-                  const top = topPicks[0]
-                  return (
-                    <div className="rounded-2xl border border-emerald-500/30 bg-gradient-to-br from-emerald-900/30 to-zinc-900 p-5 mb-4">
-                      <div className="text-xs font-bold text-emerald-400 uppercase tracking-widest mb-2">Best Pick Right Now</div>
-                      <div className="flex items-start justify-between flex-wrap gap-4">
-                        <div>
-                          <div className="text-2xl font-black text-white">{top.underdogTeam.team}</div>
-                          <div className="text-sm text-zinc-400 mt-0.5">{top.homeTeam} vs {top.awayTeam}</div>
-                          <div className="text-xs text-zinc-600">{top.sportTitle} · {new Date(top.commenceTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</div>
-                        </div>
-                        <div className="flex gap-6">
-                          <div>
-                            <div className="text-xs text-zinc-500 mb-0.5">Best Odds</div>
-                            <div className="text-3xl font-black text-emerald-400">{fmt(top.underdogTeam.bestAmericanOdds)}</div>
-                            <div className="text-xs text-zinc-500">@ {top.underdogTeam.bestBookmaker}</div>
-                          </div>
-                          <div>
-                            <div className="text-xs text-zinc-500 mb-0.5">Win Prob</div>
-                            <div className="text-3xl font-black text-white">{(top.consensusProbability * 100).toFixed(0)}%</div>
-                          </div>
-                          <div>
-                            <div className="text-xs text-zinc-500 mb-0.5">EV</div>
-                            <div className={`text-3xl font-black ${top.expectedValuePct > 0 ? "text-emerald-400" : "text-red-400"}`}>
-                              {top.expectedValuePct > 0 ? "+" : ""}{top.expectedValuePct.toFixed(1)}%
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="mt-3 flex items-center gap-2 flex-wrap">
-                        {top.analysisNotes.slice(0, 2).map((n, i) => (
-                          <span key={i} className="text-xs text-zinc-400 bg-black/30 rounded-lg px-3 py-1.5">▸ {n}</span>
-                        ))}
-                      </div>
-                    </div>
-                  )
-                })()}
-
-                {/* Rest of top picks */}
-                <div className="space-y-3">
-                  {topPicks.slice(1).map((a, i) => (
-                    <UnderdogCard
-                      key={a.eventId}
-                      analysis={a}
-                      rank={i + 2}
-                      expanded={expanded === a.eventId}
-                      tracked={isTracked(a.eventId, trackedBets)}
-                      onToggle={() => setExpanded((p) => p === a.eventId ? null : a.eventId)}
-                      onTrack={() => handleTrack(a)}
-                    />
-                  ))}
-                </div>
-              </>
-            )}
-          </section>
-
-          <p className="text-xs text-zinc-700 text-center pb-4">
-            Positive EV = statistically mispriced odds. Not a guaranteed win. Bet responsibly.
-            {data.apiQuotaRemaining !== undefined && ` · API quota: ${data.apiQuotaRemaining.toLocaleString()} remaining`}
-          </p>
+          {data.apiQuotaRemaining !== undefined && (
+            <p className="text-[10px] text-zinc-800 text-center py-2">
+              API quota remaining: {data.apiQuotaRemaining.toLocaleString()}
+            </p>
+          )}
         </main>
       )}
 
       {/* MY RECORD TAB */}
       {tab === "record" && (
-        <main className="max-w-4xl mx-auto px-4 py-5">
+        <main className="max-w-2xl mx-auto px-4 py-4">
           <BetTracker bets={trackedBets} onChange={reloadBets} fullPage />
         </main>
       )}

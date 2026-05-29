@@ -71,6 +71,7 @@ export interface BetAnalysis {
   consensusProbability: number
   lineShoppingEdge: number
   analysisNotes: string[]
+  currentScore?: { homeScore: string; awayScore: string }
 }
 
 export interface AnalysisResponse {
