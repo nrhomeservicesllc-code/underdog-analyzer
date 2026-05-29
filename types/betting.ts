@@ -79,6 +79,7 @@ export interface AnalysisResponse {
   needsSetup: boolean
   isDemo: boolean
   hasKey?: boolean
+  keyHint?: string
   apiError?: string
   sportsAnalyzed: string[]
   totalGamesScanned: number

@@ -11,17 +11,20 @@ export const dynamic = "force-dynamic"
 export async function GET() {
   const apiKey = process.env.ODDS_API_KEY?.trim()
   const hasKey = !!apiKey
+  // Partial key hint for debugging (safe to expose: first 6, last 4 chars)
+  const keyHint = apiKey
+    ? `${apiKey.slice(0, 6)}...${apiKey.slice(-4)} (${apiKey.length} chars)`
+    : null
 
   try {
     let allEvents: OddsApiEvent[] = []
     const sportsFound: string[] = []
     let quota: number | undefined
     const liveScores = new Map<string, LiveScore>()
-    let isDemo = !hasKey
     let apiError: string | undefined
 
     if (!hasKey) {
-      // No key configured — show demo with live games so UI showcases full experience
+      // No key configured — show demo data so the UI is usable
       const demo = demoEvents()
       allEvents = demo
       sportsFound.push(...[...new Set(demo.map((e) => e.sport_title))])
@@ -32,7 +35,7 @@ export async function GET() {
         }
       }
     } else {
-      // Real API
+      // Real API — do NOT fall back to demo if it fails
       try {
         const client = getClient()
 
@@ -45,7 +48,6 @@ export async function GET() {
         const remaining = [...activeKeys].filter((k) => !SPORT_PRIORITY.includes(k))
         const toFetch = [...prioritised, ...remaining]
 
-        // Fetch all sports' odds in parallel
         const results = await Promise.allSettled(
           toFetch.map((sport) => client.getOdds(sport))
         )
@@ -61,21 +63,19 @@ export async function GET() {
 
         if (!anySuccess && toFetch.length > 0) {
           const firstFail = results.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined
-          const msg = firstFail?.reason?.message ?? "All odds API calls failed"
-          // 401 = bad/expired key; 422 = quota exceeded; 429 = rate limited
-          if (msg.includes("401")) {
-            apiError = "API key rejected (401) — check your ODDS_API_KEY value in Vercel environment variables"
-          } else if (msg.includes("422")) {
-            apiError = "API quota exceeded (422) — upgrade your plan at the-odds-api.com"
-          } else if (msg.includes("429")) {
-            apiError = "Rate limited (429) — too many requests, try again shortly"
+          const raw = firstFail?.reason?.message ?? "All odds API calls failed"
+          if (raw.includes("401")) {
+            apiError = `API key rejected (401 Unauthorized). Key on server: ${keyHint}. Fix: in Vercel → Settings → Environment Variables, delete ODDS_API_KEY and re-add it with the Production checkbox checked.`
+          } else if (raw.includes("422")) {
+            apiError = `Monthly quota exhausted (422). Upgrade your plan at the-odds-api.com.`
+          } else if (raw.includes("429")) {
+            apiError = `Rate limited (429). Too many requests — wait a minute and retry.`
           } else {
-            apiError = msg
+            apiError = raw
           }
         }
 
         if (allEvents.length > 0) {
-          // Filter to games from today only (UTC window: past 12h → next 24h)
           const now = Date.now()
           const windowStart = now - 12 * 60 * 60 * 1000
           const windowEnd = now + 24 * 60 * 60 * 1000
@@ -84,8 +84,6 @@ export async function GET() {
             return t >= windowStart && t <= windowEnd
           })
 
-          // Identify sports with potentially-live games and fetch live scores
-          // (Scores API is authoritative — only games explicitly confirmed live get isLive=true)
           const sportsNeedingScores = new Set<string>()
           const now2 = Date.now()
           for (const e of allEvents) {
@@ -107,17 +105,35 @@ export async function GET() {
           }
         }
       } catch (err) {
-        apiError = (err as Error).message
+        const raw = (err as Error).message
+        if (raw.includes("401")) {
+          apiError = `API key rejected (401 Unauthorized). Key on server: ${keyHint}. Fix: in Vercel → Settings → Environment Variables, delete ODDS_API_KEY and re-add it with the Production checkbox checked.`
+        } else {
+          apiError = raw
+        }
       }
+    }
 
-      // If real API produced nothing, fall back to demo — but NO fake live games
-      if (allEvents.length === 0) {
-        isDemo = true
-        const demo = demoEvents()
-        allEvents = demo
-        sportsFound.push(...[...new Set(demo.map((e) => e.sport_title))])
-        // liveScores intentionally empty — no fake LIVE labels when API is broken
-      }
+    // If API key is set but produced an error, return error response — no demo fallback
+    if (hasKey && apiError && allEvents.length === 0) {
+      return NextResponse.json({
+        timestamp: new Date().toISOString(),
+        needsSetup: false,
+        isDemo: false,
+        hasKey: true,
+        keyHint,
+        apiError,
+        sportsAnalyzed: [],
+        totalGamesScanned: 0,
+        liveGameCount: 0,
+        totalBetsAnalyzed: 0,
+        liveAnalyses: [],
+        upcomingAnalyses: [],
+        topUnderdog: null,
+        allAnalyses: [],
+        marketStats: { avgVigPct: 0, avgOddsGap: 0, positiveEvCount: 0, strongBuyCount: 0, liveCount: 0 },
+        apiQuotaRemaining: quota,
+      }, { headers: { "Cache-Control": "no-store, max-age=0" } })
     }
 
     const analyses = analyzeAll(allEvents, liveScores)
@@ -143,8 +159,9 @@ export async function GET() {
     return NextResponse.json({
       timestamp: new Date().toISOString(),
       needsSetup: false,
-      isDemo,
+      isDemo: !hasKey,
       hasKey,
+      keyHint,
       apiError,
       sportsAnalyzed: sportsFound,
       totalGamesScanned: allEvents.length,
@@ -164,9 +181,7 @@ export async function GET() {
         liveCount: live.length,
       },
       apiQuotaRemaining: quota,
-    }, {
-      headers: { "Cache-Control": "no-store, max-age=0" },
-    })
+    }, { headers: { "Cache-Control": "no-store, max-age=0" } })
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 500 })
   }

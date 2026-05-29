@@ -225,6 +225,40 @@ export function BettingDashboard() {
 
   if (!data) return null
 
+  // API key is set but returned an error — show error screen, no fake game cards
+  if (data.hasKey && data.apiError && data.allAnalyses.length === 0) {
+    return (
+      <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 text-center gap-6">
+        <div>
+          <span className="text-2xl font-black">Sharp<span className="text-emerald-400">Dog</span></span>
+        </div>
+        <div className="bg-zinc-950 border border-red-900/60 rounded-2xl p-6 max-w-md space-y-4">
+          <div className="w-10 h-10 rounded-full bg-red-500/10 border border-red-500/30 flex items-center justify-center mx-auto text-xl">⚠</div>
+          <div>
+            <p className="text-white font-bold mb-1">API Key Issue</p>
+            <p className="text-red-400 text-sm leading-relaxed">{data.apiError}</p>
+          </div>
+          {data.keyHint && (
+            <div className="bg-zinc-900 rounded-lg px-3 py-2 text-left">
+              <p className="text-zinc-500 text-[10px] uppercase tracking-wider mb-1">Key received by server</p>
+              <p className="text-zinc-300 text-xs font-mono">{data.keyHint}</p>
+            </div>
+          )}
+          <div className="bg-zinc-900 rounded-lg px-3 py-2.5 text-left space-y-1.5">
+            <p className="text-zinc-400 text-[11px] font-bold uppercase tracking-wider">Fix checklist</p>
+            <p className="text-zinc-500 text-xs">1. Vercel → Project → Settings → Environment Variables</p>
+            <p className="text-zinc-500 text-xs">2. Delete ODDS_API_KEY → click Add New</p>
+            <p className="text-zinc-500 text-xs">3. Paste key, tick <strong className="text-zinc-300">Production</strong> checkbox</p>
+            <p className="text-zinc-500 text-xs">4. Save → Redeploy</p>
+          </div>
+          <button onClick={load} className="w-full bg-emerald-700 hover:bg-emerald-600 text-white py-2 rounded-lg text-sm font-bold">
+            Retry
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   const liveGames   = data.allAnalyses.filter((a) => a.isLive)
   const upcoming    = data.allAnalyses.filter((a) => !a.isLive)
   const hasLive     = liveGames.length > 0
@@ -330,15 +364,6 @@ export function BettingDashboard() {
             </div>
           )}
 
-          {data.isDemo && data.hasKey && (
-            <div className="bg-red-950/40 border border-red-800/50 rounded-lg px-4 py-3 space-y-1">
-              <p className="text-red-400 text-xs font-bold">⚠ Live data unavailable — showing sample lines</p>
-              {data.apiError
-                ? <p className="text-red-300/70 text-[11px]">{data.apiError}</p>
-                : <p className="text-red-300/70 text-[11px]">Check that ODDS_API_KEY is set correctly in Vercel → Settings → Environment Variables</p>
-              }
-            </div>
-          )}
           {data.apiQuotaRemaining !== undefined && (
             <p className="text-[10px] text-zinc-800 text-center py-2">
               API quota: {data.apiQuotaRemaining.toLocaleString()} remaining
