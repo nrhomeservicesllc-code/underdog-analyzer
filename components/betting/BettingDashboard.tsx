@@ -331,9 +331,12 @@ export function BettingDashboard() {
           )}
 
           {data.isDemo && data.hasKey && (
-            <div className="bg-amber-950/30 border border-amber-800/40 rounded-lg px-3 py-2 text-center">
-              <p className="text-amber-400 text-xs font-semibold">Showing demo lines — API returned no games</p>
-              {data.apiError && <p className="text-amber-700 text-[11px] mt-0.5">{data.apiError}</p>}
+            <div className="bg-red-950/40 border border-red-800/50 rounded-lg px-4 py-3 space-y-1">
+              <p className="text-red-400 text-xs font-bold">⚠ Live data unavailable — showing sample lines</p>
+              {data.apiError
+                ? <p className="text-red-300/70 text-[11px]">{data.apiError}</p>
+                : <p className="text-red-300/70 text-[11px]">Check that ODDS_API_KEY is set correctly in Vercel → Settings → Environment Variables</p>
+              }
             </div>
           )}
           {data.apiQuotaRemaining !== undefined && (

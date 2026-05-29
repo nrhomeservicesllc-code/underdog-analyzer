@@ -9,7 +9,7 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function GET() {
-  const apiKey = process.env.ODDS_API_KEY
+  const apiKey = process.env.ODDS_API_KEY?.trim()
   const hasKey = !!apiKey
 
   try {
@@ -21,7 +21,7 @@ export async function GET() {
     let apiError: string | undefined
 
     if (!hasKey) {
-      // No key — use demo data
+      // No key configured — show demo with live games so UI showcases full experience
       const demo = demoEvents()
       allEvents = demo
       sportsFound.push(...[...new Set(demo.map((e) => e.sport_title))])
@@ -60,9 +60,18 @@ export async function GET() {
         }
 
         if (!anySuccess && toFetch.length > 0) {
-          // All API calls failed — capture why
           const firstFail = results.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined
-          apiError = firstFail?.reason?.message ?? "All API calls failed"
+          const msg = firstFail?.reason?.message ?? "All odds API calls failed"
+          // 401 = bad/expired key; 422 = quota exceeded; 429 = rate limited
+          if (msg.includes("401")) {
+            apiError = "API key rejected (401) — check your ODDS_API_KEY value in Vercel environment variables"
+          } else if (msg.includes("422")) {
+            apiError = "API quota exceeded (422) — upgrade your plan at the-odds-api.com"
+          } else if (msg.includes("429")) {
+            apiError = "Rate limited (429) — too many requests, try again shortly"
+          } else {
+            apiError = msg
+          }
         }
 
         if (allEvents.length > 0) {
@@ -75,7 +84,8 @@ export async function GET() {
             return t >= windowStart && t <= windowEnd
           })
 
-          // Identify sports with potentially-live games and fetch their live scores
+          // Identify sports with potentially-live games and fetch live scores
+          // (Scores API is authoritative — only games explicitly confirmed live get isLive=true)
           const sportsNeedingScores = new Set<string>()
           const now2 = Date.now()
           for (const e of allEvents) {
@@ -97,22 +107,16 @@ export async function GET() {
           }
         }
       } catch (err) {
-        // getSports() or other top-level failure — capture and fall through to demo
         apiError = (err as Error).message
       }
 
-      // If real API produced nothing, fall back to demo data
+      // If real API produced nothing, fall back to demo — but NO fake live games
       if (allEvents.length === 0) {
         isDemo = true
         const demo = demoEvents()
         allEvents = demo
         sportsFound.push(...[...new Set(demo.map((e) => e.sport_title))])
-        const now = Date.now()
-        for (const e of demo) {
-          if (new Date(e.commence_time).getTime() < now) {
-            liveScores.set(e.id, { homeScore: "—", awayScore: "—", lastUpdate: "" })
-          }
-        }
+        // liveScores intentionally empty — no fake LIVE labels when API is broken
       }
     }
 
