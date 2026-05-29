@@ -115,6 +115,8 @@ export function BettingDashboard() {
       if (json.error) throw new Error(json.error)
       setData(json)
       setRefreshed(new Date())
+      // Auto-switch from LIVE NOW to ALL when no live games exist
+      setFilter((prev) => prev === "LIVE NOW" && json.marketStats.liveCount === 0 ? "ALL" : prev)
     } catch (e) {
       setError((e as Error).message)
     } finally {

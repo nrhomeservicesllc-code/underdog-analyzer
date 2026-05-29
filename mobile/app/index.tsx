@@ -46,6 +46,8 @@ export default function HomeScreen() {
       const json = await fetchOdds()
       setData(json)
       await reloadBets()
+      // Auto-switch from LIVE to ALL when no live games
+      setFilter((prev) => prev === "LIVE" && json.marketStats.liveCount === 0 ? "ALL" : prev)
     } catch (e) {
       setError((e as Error).message)
     } finally {
