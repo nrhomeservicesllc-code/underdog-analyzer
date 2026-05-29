@@ -214,21 +214,6 @@ export function BettingDashboard() {
 
       <main className="max-w-4xl mx-auto px-4 py-6 space-y-6">
 
-        {/* Demo mode banner */}
-        {data.isDemo && (
-          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 flex items-start gap-3">
-            <span className="text-amber-400 text-lg flex-shrink-0">⚡</span>
-            <div className="text-sm">
-              <span className="font-semibold text-amber-300">Demo mode</span>
-              <span className="text-amber-500/80"> — showing sample data so you can explore the full UI. To switch to real live odds, add </span>
-              <code className="bg-amber-500/20 px-1 rounded text-xs text-amber-300">ODDS_API_KEY</code>
-              <span className="text-amber-500/80"> in your Vercel project settings. Free API key at </span>
-              <span className="text-amber-300 font-medium">the-odds-api.com</span>
-              <span className="text-amber-500/80">.</span>
-            </div>
-          </div>
-        )}
-
         {/* Win/Loss tracker — only shows when picks have been added */}
         <BetTracker bets={trackedBets} onChange={reloadBets} />
 
