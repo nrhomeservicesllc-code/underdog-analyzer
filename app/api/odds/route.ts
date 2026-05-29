@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { getClient, SPORT_PRIORITY, LIVE_WINDOW_MINUTES } from "@/lib/odds-api"
 import { analyzeAll } from "@/lib/analyzer"
+import { demoEvents } from "@/lib/demo"
 import type { OddsApiEvent } from "@/types/betting"
 
 export const runtime = "nodejs"
@@ -8,63 +9,65 @@ export const dynamic = "force-dynamic"
 
 export async function GET() {
   const apiKey = process.env.ODDS_API_KEY
-
-  if (!apiKey) {
-    return NextResponse.json({ needsSetup: true }, {
-      headers: { "Cache-Control": "no-store, max-age=0" },
-    })
-  }
+  const isDemo = !apiKey
 
   try {
-    const client = getClient()
-
-    // Get all active sports (no outrights/futures — head-to-head only)
-    const available = await client.getSports()
-    const activeKeys = new Set(
-      available.filter((s) => s.active && !s.has_outrights).map((s) => s.key)
-    )
-
-    // Fetch all active sports — prioritised order, no limit
-    const prioritised = SPORT_PRIORITY.filter((k) => activeKeys.has(k))
-    const remaining = [...activeKeys].filter((k) => !SPORT_PRIORITY.includes(k))
-    const toFetch = [...prioritised, ...remaining]
-
-    const results = await Promise.allSettled(
-      toFetch.map((sport) => client.getOdds(sport))
-    )
-
     const events: OddsApiEvent[] = []
     const sportsFound: string[] = []
     let quota: number | undefined
-
-    for (const r of results) {
-      if (r.status !== "fulfilled") continue
-      quota = r.value.quota
-      events.push(...r.value.events)
-      if (r.value.events.length) {
-        sportsFound.push(r.value.events[0].sport_title)
-      }
-    }
-
-    // Confirm which games are truly live using the Scores API
-    // Only check sports where games might be in progress (saves quota)
-    const now = Date.now()
-    const sportsNeedingScores = new Set<string>()
-    for (const e of events) {
-      const start = new Date(e.commence_time).getTime()
-      if (start >= now) continue
-      const windowMs = (LIVE_WINDOW_MINUTES[e.sport_key] ?? 180) * 60_000
-      if (now - start < windowMs) sportsNeedingScores.add(e.sport_key)
-    }
-
     const confirmedLive = new Set<string>()
-    if (sportsNeedingScores.size > 0) {
-      const scoreResults = await Promise.allSettled(
-        [...sportsNeedingScores].map((sport) => client.getLiveEventIds(sport))
+
+    if (isDemo) {
+      const demo = demoEvents()
+      events.push(...demo)
+      sportsFound.push(...[...new Set(demo.map((e) => e.sport_title))])
+      const now = Date.now()
+      for (const e of demo) {
+        if (new Date(e.commence_time).getTime() < now) confirmedLive.add(e.id)
+      }
+    } else {
+      const client = getClient()
+
+      const available = await client.getSports()
+      const activeKeys = new Set(
+        available.filter((s) => s.active && !s.has_outrights).map((s) => s.key)
       )
-      for (const r of scoreResults) {
-        if (r.status === "fulfilled") {
-          for (const id of r.value) confirmedLive.add(id)
+
+      const prioritised = SPORT_PRIORITY.filter((k) => activeKeys.has(k))
+      const remaining = [...activeKeys].filter((k) => !SPORT_PRIORITY.includes(k))
+      const toFetch = [...prioritised, ...remaining]
+
+      const results = await Promise.allSettled(
+        toFetch.map((sport) => client.getOdds(sport))
+      )
+
+      for (const r of results) {
+        if (r.status !== "fulfilled") continue
+        quota = r.value.quota
+        events.push(...r.value.events)
+        if (r.value.events.length) {
+          sportsFound.push(r.value.events[0].sport_title)
+        }
+      }
+
+      // Confirm which games are truly live via the Scores API
+      const now = Date.now()
+      const sportsNeedingScores = new Set<string>()
+      for (const e of events) {
+        const start = new Date(e.commence_time).getTime()
+        if (start >= now) continue
+        const windowMs = (LIVE_WINDOW_MINUTES[e.sport_key] ?? 180) * 60_000
+        if (now - start < windowMs) sportsNeedingScores.add(e.sport_key)
+      }
+
+      if (sportsNeedingScores.size > 0) {
+        const scoreResults = await Promise.allSettled(
+          [...sportsNeedingScores].map((sport) => client.getLiveEventIds(sport))
+        )
+        for (const r of scoreResults) {
+          if (r.status === "fulfilled") {
+            for (const id of r.value) confirmedLive.add(id)
+          }
         }
       }
     }
@@ -91,7 +94,7 @@ export async function GET() {
     return NextResponse.json({
       timestamp: new Date().toISOString(),
       needsSetup: false,
-      isDemo: false,
+      isDemo,
       sportsAnalyzed: sportsFound,
       totalGamesScanned: events.length,
       liveGameCount: live.length,
