@@ -1,5 +1,4 @@
 import type { OddsApiEvent, BetAnalysis, TeamOdds, Bookmaker } from "@/types/betting"
-import { isEventLive } from "./odds-api"
 
 export function toDecimal(american: number) {
   return american > 0 ? american / 100 + 1 : 100 / Math.abs(american) + 1
@@ -109,7 +108,7 @@ export function analyzeEvent(event: OddsApiEvent): BetAnalysis | null {
   const valueRating = ud.noVigProbability - ud.impliedProbability
   const lineEdge = 1 / ud.avgDecimalOdds - 1 / ud.bestDecimalOdds
   const gap = Math.abs(valueRating)
-  const live = isEventLive(event.commence_time, event.sport_key)
+  const live = (event as OddsApiEvent & { _confirmedLive?: boolean })._confirmedLive ?? false
   const udScore = score(evPct, valueRating, lineEdge, gap, live)
 
   return {
@@ -136,8 +135,11 @@ export function analyzeEvent(event: OddsApiEvent): BetAnalysis | null {
   }
 }
 
-export function analyzeAll(events: OddsApiEvent[]): BetAnalysis[] {
-  return events
+export function analyzeAll(events: OddsApiEvent[], confirmedLive?: Set<string>): BetAnalysis[] {
+  const tagged = confirmedLive
+    ? events.map((e) => ({ ...e, _confirmedLive: confirmedLive.has(e.id) }))
+    : events
+  return tagged
     .map(analyzeEvent)
     .filter((a): a is BetAnalysis => a !== null)
     .sort((a, b) => {

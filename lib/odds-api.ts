@@ -2,6 +2,12 @@ import type { OddsApiEvent, OddsApiSport } from "@/types/betting"
 
 const BASE = "https://api.the-odds-api.com/v4"
 
+export interface ScoreEvent {
+  id: string
+  completed: boolean
+  scores: { name: string; score: string }[] | null
+}
+
 export class OddsApiClient {
   constructor(private key: string) {}
 
@@ -23,6 +29,26 @@ export class OddsApiClient {
 
     const quota = parseInt(res.headers.get("x-requests-remaining") ?? "0")
     return { events: await res.json(), quota }
+  }
+
+  // Returns a Set of event IDs that are confirmed live (started, not completed)
+  async getLiveEventIds(sport: string): Promise<Set<string>> {
+    try {
+      const url = new URL(`${BASE}/sports/${sport}/scores`)
+      url.searchParams.set("apiKey", this.key)
+      url.searchParams.set("daysFrom", "1")
+
+      const res = await fetch(url.toString(), { cache: "no-store" })
+      if (!res.ok) return new Set()
+
+      const data: ScoreEvent[] = await res.json()
+      // scores !== null means the game has started; completed === false means still in progress
+      return new Set(
+        data.filter((e) => e.scores !== null && !e.completed).map((e) => e.id)
+      )
+    } catch {
+      return new Set()
+    }
   }
 }
 
