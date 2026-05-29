@@ -8,6 +8,10 @@ import type { OddsApiEvent } from "@/types/betting"
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
+// Cap how many sports we fetch per request to protect API quota.
+// Priority order already puts the most important sports first.
+const MAX_SPORTS = 20
+
 export async function GET() {
   const apiKey = process.env.ODDS_API_KEY?.trim()
   const hasKey = !!apiKey
@@ -18,9 +22,10 @@ export async function GET() {
     let quota: number | undefined
     const liveScores = new Map<string, LiveScore>()
     let apiError: string | undefined
+    let errorCode: number | undefined
 
     if (!hasKey) {
-      // No key configured — show demo data so the UI is usable
+      // No key configured — show demo data
       const demo = demoEvents()
       allEvents = demo
       sportsFound.push(...[...new Set(demo.map((e) => e.sport_title))])
@@ -31,18 +36,11 @@ export async function GET() {
         }
       }
     } else {
-      // Real API — do NOT fall back to demo if it fails
+      // Real API — skip getSports() to save quota, fetch known sports directly.
+      // Inactive/off-season sports just return empty arrays (not errors).
       try {
         const client = getClient()
-
-        const available = await client.getSports()
-        const activeKeys = new Set(
-          available.filter((s) => s.active && !s.has_outrights).map((s) => s.key)
-        )
-
-        const prioritised = SPORT_PRIORITY.filter((k) => activeKeys.has(k))
-        const remaining = [...activeKeys].filter((k) => !SPORT_PRIORITY.includes(k))
-        const toFetch = [...prioritised, ...remaining]
+        const toFetch = SPORT_PRIORITY.slice(0, MAX_SPORTS)
 
         const results = await Promise.allSettled(
           toFetch.map((sport) => client.getOdds(sport))
@@ -57,29 +55,34 @@ export async function GET() {
           if (r.value.events.length) sportsFound.push(r.value.events[0].sport_title)
         }
 
-        if (!anySuccess && toFetch.length > 0) {
+        if (!anySuccess) {
           const firstFail = results.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined
-          const raw = firstFail?.reason?.message ?? "All odds API calls failed"
-          if (raw.includes("401")) {
-            apiError = `API key rejected (401 Unauthorized) — go to the-odds-api.com/manage, regenerate your key, then update ODDS_API_KEY in Vercel and redeploy.`
-          } else if (raw.includes("422")) {
-            apiError = `Monthly quota exhausted (422). Upgrade your plan at the-odds-api.com.`
-          } else if (raw.includes("429")) {
-            apiError = `Rate limited (429). Too many requests — wait a minute and retry.`
+          const raw = firstFail?.reason?.message ?? "All API calls failed"
+          // Extract status code from error message
+          const match = raw.match(/\b(4\d\d)\b/)
+          errorCode = match ? parseInt(match[1]) : undefined
+          if (errorCode === 401) {
+            apiError = "API key rejected (401) — your key is invalid or deactivated. Go to the-odds-api.com/manage to regenerate it."
+          } else if (errorCode === 422) {
+            apiError = "Monthly quota exhausted (422) — you've used all requests for this month. Upgrade at the-odds-api.com."
+          } else if (errorCode === 429) {
+            apiError = "Rate limited (429) — too many requests. Wait a minute then retry."
           } else {
             apiError = raw
           }
         }
 
         if (allEvents.length > 0) {
+          // Filter to today only (past 12h → next 24h)
           const now = Date.now()
           const windowStart = now - 12 * 60 * 60 * 1000
-          const windowEnd = now + 24 * 60 * 60 * 1000
+          const windowEnd   = now + 24 * 60 * 60 * 1000
           allEvents = allEvents.filter((e) => {
             const t = new Date(e.commence_time).getTime()
             return t >= windowStart && t <= windowEnd
           })
 
+          // Fetch live scores only for sports that may have in-progress games
           const sportsNeedingScores = new Set<string>()
           const now2 = Date.now()
           for (const e of allEvents) {
@@ -102,15 +105,13 @@ export async function GET() {
         }
       } catch (err) {
         const raw = (err as Error).message
-        if (raw.includes("401")) {
-          apiError = `API key rejected (401 Unauthorized) — go to the-odds-api.com/manage, regenerate your key, then update ODDS_API_KEY in Vercel and redeploy.`
-        } else {
-          apiError = raw
-        }
+        const match = raw.match(/\b(4\d\d)\b/)
+        errorCode = match ? parseInt(match[1]) : undefined
+        apiError = raw
       }
     }
 
-    // If API key is set but produced an error, return error response — no demo fallback
+    // API key is set but everything failed — return error without demo fallback
     if (hasKey && apiError && allEvents.length === 0) {
       return NextResponse.json({
         timestamp: new Date().toISOString(),
@@ -118,6 +119,7 @@ export async function GET() {
         isDemo: false,
         hasKey: true,
         apiError,
+        errorCode,
         sportsAnalyzed: [],
         totalGamesScanned: 0,
         liveGameCount: 0,
@@ -132,10 +134,10 @@ export async function GET() {
     }
 
     const analyses = analyzeAll(allEvents, liveScores)
-    const live = analyses.filter((a) => a.isLive)
+    const live     = analyses.filter((a) => a.isLive)
     const upcoming = analyses.filter((a) => !a.isLive)
     const positive = analyses.filter((a) => a.expectedValuePct > 0)
-    const strong = analyses.filter((a) => a.recommendation === "STRONG BUY")
+    const strong   = analyses.filter((a) => a.recommendation === "STRONG BUY")
 
     let totalVig = 0, vigCount = 0
     for (const e of allEvents) {
@@ -157,6 +159,7 @@ export async function GET() {
       isDemo: !hasKey,
       hasKey,
       apiError,
+      errorCode,
       sportsAnalyzed: sportsFound,
       totalGamesScanned: allEvents.length,
       liveGameCount: live.length,

@@ -5,8 +5,8 @@ import type { AnalysisResponse, BetAnalysis, TrackedBet } from "@/types/betting"
 import { BetTracker } from "./BetTracker"
 import { loadBets, trackBet, untrackBet, isTracked, calcRecord } from "@/lib/tracker"
 
-const LIVE_INTERVAL_MS = 20_000
-const IDLE_INTERVAL_MS = 60_000
+const LIVE_INTERVAL_MS  = 30_000   // 30s when games are live
+const IDLE_INTERVAL_MS  = 3 * 60_000  // 3 min when no live games — preserve quota
 
 function fmtAmerican(n: number) { return n > 0 ? `+${n}` : `${n}` }
 
@@ -335,28 +335,37 @@ export function BettingDashboard() {
 
   if (!data) return null
 
-  // API key is set but returned an error — show error screen, no fake game cards
+  // API key is set but returned an error — show specific error screen
   if (data.hasKey && data.apiError && data.allAnalyses.length === 0) {
+    const isQuota    = data.errorCode === 422
+    const isRateLimit = data.errorCode === 429
+    const title = isQuota ? "Monthly Quota Exhausted" : isRateLimit ? "Rate Limited" : "API Key Rejected"
+    const icon  = isQuota ? "📊" : isRateLimit ? "⏱" : "🔑"
     return (
-      <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 text-center gap-6">
-        <div>
-          <span className="text-2xl font-black">Sharp<span className="text-emerald-400">Dog</span></span>
-        </div>
-        <div className="bg-zinc-950 border border-red-900/60 rounded-2xl p-6 max-w-md space-y-4">
-          <div className="w-10 h-10 rounded-full bg-red-500/10 border border-red-500/30 flex items-center justify-center mx-auto text-xl">⚠</div>
-          <div>
-            <p className="text-white font-bold mb-1">API Key Issue</p>
-            <p className="text-red-400 text-sm leading-relaxed">{data.apiError}</p>
+      <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 gap-6">
+        <span className="text-2xl font-black">Sharp<span className="text-emerald-400">Dog</span></span>
+        <div className="bg-zinc-950 border border-red-900/60 rounded-2xl p-6 max-w-md w-full space-y-4">
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">{icon}</span>
+            <p className="text-white font-bold text-lg">{title}</p>
           </div>
-          <div className="bg-zinc-900 rounded-lg px-3 py-2.5 text-left space-y-1.5">
-            <p className="text-zinc-400 text-[11px] font-bold uppercase tracking-wider">Fix checklist</p>
-            <p className="text-zinc-500 text-xs">1. Vercel → Project → Settings → Environment Variables</p>
-            <p className="text-zinc-500 text-xs">2. Delete ODDS_API_KEY → click Add New</p>
-            <p className="text-zinc-500 text-xs">3. Paste key, tick <strong className="text-zinc-300">Production</strong> checkbox</p>
-            <p className="text-zinc-500 text-xs">4. Save → Redeploy</p>
-          </div>
-          <button onClick={load} className="w-full bg-emerald-700 hover:bg-emerald-600 text-white py-2 rounded-lg text-sm font-bold">
-            Retry
+          <p className="text-red-400 text-sm leading-relaxed">{data.apiError}</p>
+          {isQuota && (
+            <div className="bg-zinc-900 rounded-lg px-3 py-2.5 space-y-1">
+              <p className="text-zinc-400 text-[11px] font-bold uppercase tracking-wider">How to fix</p>
+              <p className="text-zinc-500 text-xs">Go to the-odds-api.com → upgrade your plan for more monthly requests.</p>
+            </div>
+          )}
+          {!isQuota && !isRateLimit && (
+            <div className="bg-zinc-900 rounded-lg px-3 py-2.5 space-y-1.5">
+              <p className="text-zinc-400 text-[11px] font-bold uppercase tracking-wider">How to fix</p>
+              <p className="text-zinc-500 text-xs">1. Go to the-odds-api.com/manage → regenerate your key</p>
+              <p className="text-zinc-500 text-xs">2. Vercel → Settings → Environment Variables → edit ODDS_API_KEY</p>
+              <p className="text-zinc-500 text-xs">3. Paste new key with <strong className="text-zinc-300">Production</strong> checked → Save → Redeploy</p>
+            </div>
+          )}
+          <button onClick={load} className="w-full bg-emerald-700 hover:bg-emerald-600 text-white py-2.5 rounded-xl text-sm font-bold">
+            {isRateLimit ? "Retry Now" : "Retry"}
           </button>
         </div>
       </div>

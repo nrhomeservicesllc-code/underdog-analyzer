@@ -1,4 +1,4 @@
-import type { OddsApiEvent, OddsApiSport } from "@/types/betting"
+import type { OddsApiEvent } from "@/types/betting"
 
 const BASE = "https://api.the-odds-api.com/v4"
 
@@ -19,12 +19,6 @@ export interface LiveScore {
 
 export class OddsApiClient {
   constructor(private key: string) {}
-
-  async getSports(): Promise<OddsApiSport[]> {
-    const res = await fetch(`${BASE}/sports?api_key=${encodeURIComponent(this.key)}`, { cache: "no-store" })
-    if (!res.ok) throw new Error(`Sports fetch failed: ${res.status}`)
-    return res.json()
-  }
 
   async getOdds(sport: string): Promise<{ events: OddsApiEvent[]; quota: number }> {
     const url = new URL(`${BASE}/sports/${sport}/odds`)

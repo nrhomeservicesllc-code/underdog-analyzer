@@ -80,6 +80,7 @@ export interface AnalysisResponse {
   isDemo: boolean
   hasKey?: boolean
   apiError?: string
+  errorCode?: number
   sportsAnalyzed: string[]
   totalGamesScanned: number
   liveGameCount: number
