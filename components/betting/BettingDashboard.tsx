@@ -36,6 +36,116 @@ function OddsBox({ odds, dir, highlight }: { odds: number; dir: "up" | "down" | 
   )
 }
 
+function TopPickCard({
+  analysis, prevOdds, tracked, onTrack,
+}: {
+  analysis: BetAnalysis
+  prevOdds?: { fav: number; ud: number }
+  tracked: boolean
+  onTrack: () => void
+}) {
+  const { favoriteTeam: fav, underdogTeam: ud } = analysis
+  const score = analysis.currentScore
+  const favScore = score ? (fav.isHome ? score.homeScore : score.awayScore) : null
+  const udScore  = score ? (ud.isHome  ? score.homeScore : score.awayScore) : null
+  const udDir = oddsDir(ud.bestAmericanOdds, prevOdds?.ud)
+  const evPos = analysis.expectedValuePct > 0
+  const payout = ((ud.bestDecimalOdds - 1) * 100).toFixed(0)
+  const topNotes = analysis.analysisNotes.slice(0, 2)
+
+  return (
+    <div className="rounded-2xl overflow-hidden border border-emerald-500/40 bg-gradient-to-b from-emerald-950/40 to-zinc-950 relative">
+      {/* Glow bar */}
+      <div className="absolute inset-x-0 top-0 h-0.5 bg-gradient-to-r from-transparent via-emerald-400 to-transparent" />
+
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 pt-3 pb-1">
+        <div className="flex items-center gap-2">
+          <span className="text-emerald-400 text-[10px] font-black uppercase tracking-[0.2em]">⭐ SharpDog Top Pick</span>
+          {analysis.isLive && (
+            <span className="flex items-center gap-1 text-red-400 text-[10px] font-black">
+              <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />LIVE
+            </span>
+          )}
+        </div>
+        <span className={`text-[10px] font-black px-2 py-0.5 rounded ${REC_COLOR[analysis.recommendation]}`}>
+          {analysis.recommendation}
+        </span>
+      </div>
+
+      {/* Sport + matchup */}
+      <div className="px-4 pb-2">
+        <p className="text-zinc-500 text-[10px] uppercase tracking-widest mb-1">{analysis.sportTitle}</p>
+
+        {/* Teams with score */}
+        <div className="flex items-center gap-3 mb-1">
+          <span className="text-zinc-400 text-sm">{fav.team}</span>
+          {favScore !== null && (
+            <span className="text-zinc-300 text-base font-black tabular-nums">{favScore}</span>
+          )}
+        </div>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className="text-white text-lg font-black">{ud.team}</span>
+            {udScore !== null && (
+              <span className="text-emerald-300 text-xl font-black tabular-nums">{udScore}</span>
+            )}
+          </div>
+          {/* Big odds */}
+          <div className={`flex items-center gap-1 px-4 py-2 rounded-xl border font-mono font-black text-2xl transition-all ${
+            udDir === "up" ? "bg-emerald-950 border-emerald-500 text-emerald-300 ring-1 ring-emerald-400"
+            : udDir === "down" ? "bg-red-950/40 border-red-700/50 text-red-300"
+            : "bg-emerald-950 border-emerald-700 text-emerald-300"
+          }`}>
+            {fmtAmerican(ud.bestAmericanOdds)}
+            {udDir === "up"   && <span className="text-emerald-400 text-sm">↑</span>}
+            {udDir === "down" && <span className="text-red-400 text-sm">↓</span>}
+          </div>
+        </div>
+        <p className="text-zinc-600 text-[10px] mt-0.5">Best line at {ud.bestBookmaker}</p>
+      </div>
+
+      {/* Stats row */}
+      <div className="grid grid-cols-3 border-t border-zinc-800/60 divide-x divide-zinc-800/60">
+        <div className="px-3 py-2 text-center">
+          <p className="text-white font-black text-base">{(analysis.consensusProbability * 100).toFixed(0)}%</p>
+          <p className="text-zinc-600 text-[10px] uppercase tracking-wide">Win Prob</p>
+        </div>
+        <div className="px-3 py-2 text-center">
+          <p className={`font-black text-base ${evPos ? "text-emerald-400" : "text-red-400"}`}>
+            {evPos ? "+" : ""}{analysis.expectedValuePct.toFixed(1)}%
+          </p>
+          <p className="text-zinc-600 text-[10px] uppercase tracking-wide">Expected Value</p>
+        </div>
+        <div className="px-3 py-2 text-center">
+          <p className="text-white font-black text-base">${payout}</p>
+          <p className="text-zinc-600 text-[10px] uppercase tracking-wide">Profit / $100</p>
+        </div>
+      </div>
+
+      {/* Analysis notes */}
+      {topNotes.length > 0 && (
+        <div className="px-4 py-3 border-t border-zinc-800/60 space-y-1">
+          {topNotes.map((n, i) => (
+            <p key={i} className="text-zinc-500 text-xs leading-relaxed">▸ {n}</p>
+          ))}
+        </div>
+      )}
+
+      {/* Track button */}
+      <div className="px-4 pb-4">
+        <button onClick={onTrack} className={`w-full py-2.5 rounded-xl font-bold text-sm transition-all ${
+          tracked
+            ? "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+            : "bg-emerald-600 hover:bg-emerald-500 text-white"
+        }`}>
+          {tracked ? "✓ Tracking this pick" : "Track This Pick"}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function GameCard({
   analysis, prevOdds, tracked, onTrack, isLive,
 }: {
@@ -262,6 +372,9 @@ export function BettingDashboard() {
   const liveGames   = data.allAnalyses.filter((a) => a.isLive)
   const upcoming    = data.allAnalyses.filter((a) => !a.isLive)
   const hasLive     = liveGames.length > 0
+  // Top pick = best live game, or best upcoming if no live games
+  const topPick     = liveGames[0] ?? upcoming[0] ?? null
+  const topPickLive = !!topPick && topPick.isLive
 
   return (
     <div className="min-h-screen bg-black text-white">
@@ -321,7 +434,17 @@ export function BettingDashboard() {
             ))}
           </div>
 
-          {/* Live games */}
+          {/* Top pick hero card */}
+          {topPick && (
+            <TopPickCard
+              analysis={topPick}
+              prevOdds={oddsMovement.get(topPick.eventId)}
+              tracked={isTracked(topPick.eventId, trackedBets)}
+              onTrack={() => handleTrack(topPick)}
+            />
+          )}
+
+          {/* Live games — skip the top pick to avoid duplication */}
           {liveGames.length > 0 && (
             <section className="space-y-3">
               <div className="flex items-center gap-2">
@@ -330,16 +453,18 @@ export function BettingDashboard() {
                   Live Now — {liveGames.length} game{liveGames.length !== 1 ? "s" : ""} in progress
                 </span>
               </div>
-              {liveGames.map((a) => (
-                <GameCard key={a.eventId} analysis={a} isLive={true}
-                  prevOdds={oddsMovement.get(a.eventId)}
-                  tracked={isTracked(a.eventId, trackedBets)}
-                  onTrack={() => handleTrack(a)} />
-              ))}
+              {liveGames
+                .filter((a) => a.eventId !== topPick?.eventId)
+                .map((a) => (
+                  <GameCard key={a.eventId} analysis={a} isLive={true}
+                    prevOdds={oddsMovement.get(a.eventId)}
+                    tracked={isTracked(a.eventId, trackedBets)}
+                    onTrack={() => handleTrack(a)} />
+                ))}
             </section>
           )}
 
-          {/* Upcoming today */}
+          {/* Upcoming today — skip the top pick if it's an upcoming game */}
           {upcoming.length > 0 && (
             <section className="space-y-3">
               <div className="flex items-center justify-between">
@@ -348,12 +473,14 @@ export function BettingDashboard() {
                 </span>
                 <span className="text-[10px] text-zinc-700">sorted by EV</span>
               </div>
-              {upcoming.map((a) => (
-                <GameCard key={a.eventId} analysis={a} isLive={false}
-                  prevOdds={oddsMovement.get(a.eventId)}
-                  tracked={isTracked(a.eventId, trackedBets)}
-                  onTrack={() => handleTrack(a)} />
-              ))}
+              {upcoming
+                .filter((a) => topPickLive || a.eventId !== topPick?.eventId)
+                .map((a) => (
+                  <GameCard key={a.eventId} analysis={a} isLive={false}
+                    prevOdds={oddsMovement.get(a.eventId)}
+                    tracked={isTracked(a.eventId, trackedBets)}
+                    onTrack={() => handleTrack(a)} />
+                ))}
             </section>
           )}
 
