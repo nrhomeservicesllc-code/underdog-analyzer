@@ -366,9 +366,9 @@ export function BettingDashboard() {
   const liveGames   = data.allAnalyses.filter((a) => a.isLive)
   const upcoming    = data.allAnalyses.filter((a) => !a.isLive)
   const hasLive     = liveGames.length > 0
-  // Top pick = best live game, or best upcoming if no live games
-  const topPick     = liveGames[0] ?? upcoming[0] ?? null
-  const topPickLive = !!topPick && topPick.isLive
+  // Top pick is strictly the best LIVE game — never an upcoming game
+  const topPick     = liveGames[0] ?? null
+  const restOfLive  = liveGames.slice(1)
 
   return (
     <div className="min-h-screen bg-black text-white">
@@ -428,7 +428,7 @@ export function BettingDashboard() {
             ))}
           </div>
 
-          {/* Top pick hero card */}
+          {/* Top pick hero card — only shown when there are live games */}
           {topPick && (
             <TopPickCard
               analysis={topPick}
@@ -438,43 +438,39 @@ export function BettingDashboard() {
             />
           )}
 
-          {/* Live games — skip the top pick to avoid duplication */}
-          {liveGames.length > 0 && (
+          {/* Remaining live games (top pick already shown above) */}
+          {restOfLive.length > 0 && (
             <section className="space-y-3">
               <div className="flex items-center gap-2">
                 <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
                 <span className="text-[11px] text-zinc-500 uppercase tracking-widest font-bold">
-                  Live Now — {liveGames.length} game{liveGames.length !== 1 ? "s" : ""} in progress
+                  Also Live — {restOfLive.length} more game{restOfLive.length !== 1 ? "s" : ""}
                 </span>
               </div>
-              {liveGames
-                .filter((a) => a.eventId !== topPick?.eventId)
-                .map((a) => (
-                  <GameCard key={a.eventId} analysis={a} isLive={true}
-                    prevOdds={oddsMovement.get(a.eventId)}
-                    tracked={isTracked(a.eventId, trackedBets)}
-                    onTrack={() => handleTrack(a)} />
-                ))}
+              {restOfLive.map((a) => (
+                <GameCard key={a.eventId} analysis={a} isLive={true}
+                  prevOdds={oddsMovement.get(a.eventId)}
+                  tracked={isTracked(a.eventId, trackedBets)}
+                  onTrack={() => handleTrack(a)} />
+              ))}
             </section>
           )}
 
-          {/* Upcoming today — skip the top pick if it's an upcoming game */}
+          {/* Upcoming games — always a separate section, never mixed with live */}
           {upcoming.length > 0 && (
             <section className="space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-[11px] text-zinc-500 uppercase tracking-widest font-bold">
-                  Today's Lines — {upcoming.length} upcoming
+                  Coming Up Today — {upcoming.length} game{upcoming.length !== 1 ? "s" : ""}
                 </span>
                 <span className="text-[10px] text-zinc-700">sorted by EV</span>
               </div>
-              {upcoming
-                .filter((a) => topPickLive || a.eventId !== topPick?.eventId)
-                .map((a) => (
-                  <GameCard key={a.eventId} analysis={a} isLive={false}
-                    prevOdds={oddsMovement.get(a.eventId)}
-                    tracked={isTracked(a.eventId, trackedBets)}
-                    onTrack={() => handleTrack(a)} />
-                ))}
+              {upcoming.map((a) => (
+                <GameCard key={a.eventId} analysis={a} isLive={false}
+                  prevOdds={oddsMovement.get(a.eventId)}
+                  tracked={isTracked(a.eventId, trackedBets)}
+                  onTrack={() => handleTrack(a)} />
+              ))}
             </section>
           )}
 
