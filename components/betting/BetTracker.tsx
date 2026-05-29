@@ -72,6 +72,30 @@ export function BetTracker({
 
       {open && (
         <div className="border-t border-zinc-800">
+          {/* ROI stats strip */}
+          {settled.length > 0 && (() => {
+            const totalSettled = rec.wins + rec.losses
+            const winRate = totalSettled > 0 ? (rec.wins / totalSettled) * 100 : 0
+            const roi = totalSettled > 0 ? (rec.pnl / (totalSettled * 100)) * 100 : 0
+            return (
+              <div className="grid grid-cols-4 divide-x divide-zinc-800 border-b border-zinc-800 bg-zinc-950/60">
+                {[
+                  { label: "Win Rate", value: `${winRate.toFixed(0)}%`, positive: winRate >= 50 },
+                  { label: "Total P&L", value: `${rec.pnl >= 0 ? "+" : ""}$${rec.pnl.toFixed(0)}`, positive: rec.pnl >= 0 },
+                  { label: "ROI", value: `${roi >= 0 ? "+" : ""}${roi.toFixed(1)}%`, positive: roi >= 0 },
+                  { label: "Settled", value: `${totalSettled}`, positive: null },
+                ].map((s) => (
+                  <div key={s.label} className="flex flex-col items-center py-3 px-2">
+                    <span className={`text-base font-black tabular-nums ${s.positive === null ? "text-white" : s.positive ? "text-emerald-400" : "text-red-400"}`}>
+                      {s.value}
+                    </span>
+                    <span className="text-[10px] text-zinc-500 uppercase tracking-wide mt-0.5">{s.label}</span>
+                  </div>
+                ))}
+              </div>
+            )
+          })()}
+
           {/* Pending bets */}
           {pending.length > 0 && (
             <div className="divide-y divide-zinc-800">

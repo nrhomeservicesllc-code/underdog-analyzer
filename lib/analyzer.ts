@@ -137,16 +137,9 @@ export function analyzeEvent(event: OddsApiEvent): BetAnalysis | null {
 }
 
 export function analyzeAll(events: OddsApiEvent[]): BetAnalysis[] {
-  const now = Date.now()
   return events
     .map(analyzeEvent)
-    .filter((a): a is BetAnalysis => {
-      if (!a) return false
-      // Drop games that have started but are past their live window — they're over
-      const started = new Date(a.commenceTime).getTime() < now
-      if (started && !a.isLive) return false
-      return true
-    })
+    .filter((a): a is BetAnalysis => a !== null)
     .sort((a, b) => {
       if (a.isLive && !b.isLive) return -1
       if (!a.isLive && b.isLive) return 1
