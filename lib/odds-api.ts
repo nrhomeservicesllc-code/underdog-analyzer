@@ -1,6 +1,7 @@
-import type { OddsApiEvent } from "@/types/betting"
+import type { OddsApiEvent, Bookmaker, Outcome } from "@/types/betting"
 
-const BASE = "https://api.the-odds-api.com/v4"
+// Odds-API.io v3 — base URL from official Node SDK
+const BASE = "https://api2.odds-api.io/v3"
 
 export interface ScoreEvent {
   id: string
@@ -17,53 +18,198 @@ export interface LiveScore {
   lastUpdate: string
 }
 
+// Internal types for odds-api.io response format
+interface OddsApiIoSport {
+  name: string
+  slug: string
+}
+
+interface OddsApiIoEvent {
+  id: number | string
+  home: string
+  away: string
+  date: string
+  sport?: OddsApiIoSport
+  league?: OddsApiIoSport
+  status?: string
+}
+
+interface OddsApiIoMarket {
+  market: string
+  home?: number
+  draw?: number
+  away?: number
+  lastUpdate?: string
+  last_update?: string
+}
+
+interface OddsApiIoEventWithOdds extends OddsApiIoEvent {
+  bookmakers?: Record<string, OddsApiIoMarket[]>
+}
+
+// Convert decimal odds (e.g. 1.85) to American odds (e.g. -118)
+function decimalToAmerican(decimal: number): number {
+  if (!decimal || decimal <= 1) return 0
+  if (decimal >= 2) return Math.round((decimal - 1) * 100)
+  return Math.round(-100 / (decimal - 1))
+}
+
+function mapToOddsApiEvent(e: OddsApiIoEventWithOdds): OddsApiEvent | null {
+  const books: Bookmaker[] = []
+
+  if (e.bookmakers && typeof e.bookmakers === "object" && !Array.isArray(e.bookmakers)) {
+    for (const [bookName, markets] of Object.entries(e.bookmakers)) {
+      if (!Array.isArray(markets) || markets.length === 0) continue
+
+      // Find moneyline market — "ML", "moneyline", "h2h", "1x2"
+      const ml = markets.find((m) => {
+        const mk = (m.market ?? "").toUpperCase()
+        return mk === "ML" || mk === "MONEYLINE" || mk === "H2H" || mk === "1X2"
+      }) ?? markets[0]
+
+      if (!ml) continue
+
+      const lastUpdate = ml.lastUpdate ?? ml.last_update ?? new Date().toISOString()
+      const outcomes: Outcome[] = []
+
+      if (ml.home !== undefined && ml.home > 1) {
+        outcomes.push({ name: e.home, price: decimalToAmerican(ml.home) })
+      }
+      if (ml.away !== undefined && ml.away > 1) {
+        outcomes.push({ name: e.away, price: decimalToAmerican(ml.away) })
+      }
+      if (ml.draw !== undefined && ml.draw > 1) {
+        outcomes.push({ name: "Draw", price: decimalToAmerican(ml.draw) })
+      }
+
+      if (outcomes.length < 2) continue
+
+      books.push({
+        key: bookName.toLowerCase().replace(/[^a-z0-9]/g, "_"),
+        title: bookName,
+        last_update: lastUpdate,
+        markets: [{ key: "h2h", last_update: lastUpdate, outcomes }],
+      })
+    }
+  }
+
+  if (books.length === 0) return null
+
+  // Build sport_key: "football" + "premier-league" → "soccer_epl" style key
+  const sportSlug  = (e.sport?.slug  ?? "unknown").toLowerCase().replace(/-/g, "_")
+  const leagueSlug = (e.league?.slug ?? "unknown").toLowerCase().replace(/-/g, "_")
+  const sportKey   = `${sportSlug}_${leagueSlug}`
+  const sportTitle = e.league?.name
+    ? `${e.sport?.name ?? ""} — ${e.league.name}`.replace(/^— /, "")
+    : (e.sport?.name ?? "Sports")
+
+  return {
+    id: String(e.id),
+    sport_key: sportKey,
+    sport_title: sportTitle,
+    commence_time: e.date,
+    home_team: e.home,
+    away_team: e.away,
+    bookmakers: books,
+  }
+}
+
 export class OddsApiClient {
   constructor(private key: string) {}
 
-  async getOdds(sport: string): Promise<{ events: OddsApiEvent[]; quota: number }> {
-    const url = new URL(`${BASE}/sports/${sport}/odds`)
-    url.searchParams.set("api_key", this.key)
-    url.searchParams.set("regions", "us,us2,uk,eu,au")
-    url.searchParams.set("markets", "h2h")
-    url.searchParams.set("oddsFormat", "american")
-    url.searchParams.set("dateFormat", "iso")
+  async getOdds(): Promise<{ events: OddsApiEvent[]; quota: number; liveEventIds: Set<string> }> {
+    const now  = Date.now()
+    const from = new Date(now - 12 * 60 * 60 * 1000).toISOString()
+    const to   = new Date(now + 24 * 60 * 60 * 1000).toISOString()
 
-    const res = await fetch(url.toString(), { cache: "no-store" })
-    if (!res.ok) throw new Error(`Odds fetch failed for ${sport}: ${res.status}`)
+    // Fetch live events and upcoming events in parallel
+    const [liveRes, upcomingRes] = await Promise.all([
+      fetch(`${BASE}/events/live?apiKey=${this.key}`, { cache: "no-store" }),
+      fetch(
+        `${BASE}/events?apiKey=${this.key}&status=upcoming&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+        { cache: "no-store" }
+      ),
+    ])
 
-    const quota = parseInt(res.headers.get("x-requests-remaining") ?? "0")
-    return { events: await res.json(), quota }
+    if (!liveRes.ok && !upcomingRes.ok) {
+      // Both failed — surface the more informative error
+      const status = !liveRes.ok ? liveRes.status : upcomingRes.status
+      throw new Error(`Events fetch failed: ${status}`)
+    }
+
+    const liveEvents: OddsApiIoEvent[]     = liveRes.ok     ? await liveRes.json()     : []
+    const upcomingEvents: OddsApiIoEvent[] = upcomingRes.ok ? await upcomingRes.json() : []
+
+    // Combine, de-duplicate by id
+    const seen   = new Set<string>()
+    const allRaw: OddsApiIoEvent[] = []
+    for (const e of [...liveEvents, ...upcomingEvents]) {
+      const id = String(e.id)
+      if (!seen.has(id)) { seen.add(id); allRaw.push(e) }
+    }
+
+    const liveEventIds = new Set(
+      liveEvents.map((e) => String(e.id))
+    )
+
+    // Also treat any event with status "live" as live
+    for (const e of upcomingEvents) {
+      if ((e.status ?? "").toLowerCase() === "live") liveEventIds.add(String(e.id))
+    }
+
+    if (allRaw.length === 0) {
+      const quota = this.extractQuota(liveRes.ok ? liveRes : upcomingRes)
+      return { events: [], quota, liveEventIds }
+    }
+
+    // Fetch odds for all events in one batch call
+    const eventIds = allRaw.map((e) => e.id).join(",")
+    const oddsUrl  = new URL(`${BASE}/odds/multi`)
+    oddsUrl.searchParams.set("apiKey", this.key)
+    oddsUrl.searchParams.set("eventIds", eventIds)
+    oddsUrl.searchParams.set("market", "moneyline")
+
+    const oddsRes = await fetch(oddsUrl.toString(), { cache: "no-store" })
+    const quota   = this.extractQuota(oddsRes)
+
+    if (!oddsRes.ok) {
+      throw new Error(`Odds fetch failed: ${oddsRes.status}`)
+    }
+
+    const oddsData: OddsApiIoEventWithOdds[] = await oddsRes.json()
+
+    // Build lookup: eventId → bookmakers
+    const oddsById = new Map<string, Record<string, OddsApiIoMarket[]>>()
+    for (const o of Array.isArray(oddsData) ? oddsData : []) {
+      const asAny = o as { id?: unknown; eventId?: unknown }
+      const id = String(o.id ?? asAny.eventId)
+      if (id && o.bookmakers) oddsById.set(id, o.bookmakers)
+    }
+
+    const events: OddsApiEvent[] = []
+    for (const ev of allRaw) {
+      const id   = String(ev.id)
+      const bks  = oddsById.get(id)
+      const full: OddsApiIoEventWithOdds = { ...ev, bookmakers: bks }
+      const mapped = mapToOddsApiEvent(full)
+      if (mapped) events.push(mapped)
+    }
+
+    return { events, quota, liveEventIds }
   }
 
-  async getLiveScores(sport: string): Promise<Map<string, LiveScore>> {
-    try {
-      const url = new URL(`${BASE}/sports/${sport}/scores`)
-      url.searchParams.set("api_key", this.key)
-      url.searchParams.set("daysFrom", "1")
-      url.searchParams.set("dateFormat", "iso")
+  // Legacy method kept for interface compatibility — live status now comes from events API
+  async getLiveScores(_sport: string): Promise<Map<string, LiveScore>> {
+    return new Map()
+  }
 
-      const res = await fetch(url.toString(), { cache: "no-store" })
-      if (!res.ok) return new Map()
-
-      const data: ScoreEvent[] = await res.json()
-      const result = new Map<string, LiveScore>()
-
-      for (const e of data) {
-        if (!Array.isArray(e.scores) || e.scores.length < 2 || e.completed) continue
-        const home = e.scores.find((s) => s.name === e.home_team)
-        const away = e.scores.find((s) => s.name === e.away_team)
-        if (!home || !away) continue
-        result.set(e.id, {
-          homeScore: home.score,
-          awayScore: away.score,
-          lastUpdate: e.last_update ?? "",
-        })
-      }
-
-      return result
-    } catch {
-      return new Map()
-    }
+  private extractQuota(res: Response): number {
+    return parseInt(
+      res.headers.get("x-requests-remaining") ??
+      res.headers.get("x-ratelimit-remaining") ??
+      res.headers.get("x-hourly-remaining") ??
+      "5000"
+    )
   }
 }
 
@@ -73,7 +219,7 @@ export function getClient() {
   return new OddsApiClient(key)
 }
 
-// How long after start we still consider a game "live" (fallback only — Scores API is authoritative)
+// Fallback live-window used when event status is unknown (not from API)
 export const LIVE_WINDOW_MINUTES: Record<string, number> = {
   basketball_nba: 150,
   basketball_ncaab: 150,
@@ -130,45 +276,10 @@ export const SPORT_PRIORITY = [
   "soccer_italy_serie_a",
   "soccer_france_ligue_one",
   "soccer_usa_mls",
-  "soccer_netherlands_eredivisie",
-  "soccer_portugal_primeira_liga",
-  "soccer_mexico_ligamx",
-  "soccer_brazil_campeonato",
-  "soccer_argentina_primera_division",
-  "soccer_turkey_super_league",
-  "soccer_uefa_champs_league",
-  "soccer_uefa_europa_league",
   "basketball_nba",
   "baseball_mlb",
   "icehockey_nhl",
   "americanfootball_nfl",
-  "basketball_ncaab",
-  "americanfootball_ncaaf",
-  "tennis_atp_french_open",
-  "tennis_wta_french_open",
-  "tennis_atp_wimbledon",
-  "tennis_wta_wimbledon",
-  "tennis_atp_us_open",
-  "tennis_wta_us_open",
-  "tennis_atp_australian_open",
-  "tennis_wta_australian_open",
   "mma_mixed_martial_arts",
   "boxing_boxing",
-  "basketball_euroleague",
-  "rugbyleague_nrl",
-  "rugbyunion_premiership",
-  "rugbyunion_super_rugby",
-  "aussierules_afl",
-  "cricket_test_match",
-  "cricket_odi",
-  "cricket_t20",
-  "darts_betway_premier_league",
-  "icehockey_sweden_hockey_league",
-  "esports_lol",
-  "esports_csgo",
-  "esports_dota_2",
-  "esports_valorant",
-  "esports_r6",
-  "esports_overwatch",
-  "esports_kog",
 ]
