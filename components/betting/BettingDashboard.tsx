@@ -5,8 +5,7 @@ import type { AnalysisResponse, BetAnalysis, TrackedBet } from "@/types/betting"
 import { BetTracker } from "./BetTracker"
 import { loadBets, trackBet, untrackBet, isTracked, calcRecord } from "@/lib/tracker"
 
-const LIVE_INTERVAL_MS = 30_000
-const IDLE_INTERVAL_MS = 3 * 60_000
+const REFRESH_INTERVAL_MS = 60 * 60_000  // 1 hour
 const LIVE_PICK_KEY     = "sharpdog_live_pick"
 const UPCOMING_PICK_KEY = "sharpdog_upcoming_pick"
 
@@ -175,13 +174,12 @@ export function BettingDashboard() {
 
   useEffect(() => { load() }, [load])
 
-  // Auto-refresh: faster when live
+  // Refresh once per hour
   useEffect(() => {
     if (intervalRef.current) clearInterval(intervalRef.current)
-    const ms = (data?.marketStats.liveCount ?? 0) > 0 ? LIVE_INTERVAL_MS : IDLE_INTERVAL_MS
-    intervalRef.current = setInterval(load, ms)
+    intervalRef.current = setInterval(load, REFRESH_INTERVAL_MS)
     return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
-  }, [load, data?.marketStats.liveCount])
+  }, [load])
 
   // Resolve both picks whenever analyses update
   useEffect(() => {
@@ -345,7 +343,7 @@ export function BettingDashboard() {
           </section>
 
           <p className="text-center text-zinc-700 text-[11px]">
-            {data.totalGamesScanned} games scanned · auto-advances when each game ends
+            {data.totalGamesScanned} games scanned · refreshes every hour
           </p>
         </main>
       )}
