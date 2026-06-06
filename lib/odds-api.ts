@@ -1,16 +1,6 @@
+import { OddsAPIClient as SdkClient, InvalidAPIKeyError, RateLimitExceededError } from "odds-api-io"
+import type { Event as SdkEvent, EventOdds, Sport, Bookmaker as SdkBookmaker, MarketOdds } from "odds-api-io"
 import type { OddsApiEvent, Bookmaker, Outcome } from "@/types/betting"
-
-// odds-api.io v3  —  base URL from official quickstart docs
-const BASE = "https://api.odds-api.io/v3"
-
-export interface ScoreEvent {
-  id: string
-  home_team: string
-  away_team: string
-  completed: boolean
-  scores: { name: string; score: string }[] | null
-  last_update: string | null
-}
 
 export interface LiveScore {
   homeScore: string
@@ -18,179 +8,184 @@ export interface LiveScore {
   lastUpdate: string
 }
 
-// ---------- internal types for odds-api.io response ----------
+// Priority sport IDs as odds-api.io uses them (discovered via getSports())
+const PRIORITY_SPORTS = [
+  "basketball",
+  "soccer",
+  "football",           // some APIs use football for soccer
+  "american-football",
+  "baseball",
+  "ice-hockey",
+  "tennis",
+  "mma",
+  "boxing",
+  "rugby",
+  "cricket",
+]
 
-interface OddsApiIoSport  { name: string; slug: string }
+const MAX_EVENTS = 60  // cap to avoid huge odds/multi calls
 
-interface OddsApiIoEvent {
-  id: number | string
-  home: string
-  away: string
-  // API may return the start time under different field names
-  date?: string
-  startTime?: string
-  commenceTime?: string
-  sport?:  OddsApiIoSport
-  league?: OddsApiIoSport
-  status?: string
-}
-
-interface OddsApiIoMarket {
-  market?: string
-  home?:   number
-  draw?:   number
-  away?:   number
-  lastUpdate?: string
-  last_update?: string
-}
-
-interface OddsApiIoOddsEntry {
-  id?:        number | string
-  eventId?:   number | string
-  bookmakers?: Record<string, OddsApiIoMarket[]>
-}
-
-// ---------- helpers ----------
-
-// Decimal odds (1.85) → American (-118); American odds arrive as ints > 100 / < -100
-function toAmerican(n: number): number {
-  if (!n || n === 0) return 0
-  // Already American: integers like -150, +230
-  if (Number.isInteger(n) && (n > 100 || n < -100)) return n
-  // Decimal: always >= 1.01
+function decimalToAmerican(n: number): number {
+  if (!n || n <= 1) return 0
   if (n >= 2) return Math.round((n - 1) * 100)
-  if (n > 1)  return Math.round(-100 / (n - 1))
-  return 0
+  return Math.round(-100 / (n - 1))
 }
 
-function eventTime(e: OddsApiIoEvent): string {
-  return e.date ?? e.startTime ?? e.commenceTime ?? new Date().toISOString()
-}
+function mapSdkEventToOddsApi(
+  sdkEvent: SdkEvent,
+  oddsEntry: EventOdds | undefined
+): OddsApiEvent | null {
+  if (!oddsEntry || !oddsEntry.markets?.length) return null
 
-function mapEvent(e: OddsApiIoEvent, bookmakers?: Record<string, OddsApiIoMarket[]>): OddsApiEvent | null {
-  const books: Bookmaker[] = []
+  const homeName = sdkEvent.homeParticipant.name
+  const awayName = sdkEvent.awayParticipant.name
 
-  if (bookmakers && typeof bookmakers === "object" && !Array.isArray(bookmakers)) {
-    for (const [bookName, markets] of Object.entries(bookmakers)) {
-      if (!Array.isArray(markets) || markets.length === 0) continue
+  // Find moneyline market — try common names
+  const ml = oddsEntry.markets.find((m: MarketOdds) => {
+    const mk = (m.market ?? "").toLowerCase()
+    return mk === "moneyline" || mk === "ml" || mk === "h2h" || mk === "1x2" || mk === "match winner"
+  }) ?? oddsEntry.markets[0]
 
-      // Accept any moneyline variant; fall back to first market if none found
-      const ml = markets.find((m) => {
-        const mk = (m.market ?? "").toUpperCase()
-        return !mk || mk === "ML" || mk === "MONEYLINE" || mk === "H2H" || mk === "1X2"
-      }) ?? markets[0]
+  if (!ml?.outcomes?.length) return null
 
-      if (!ml) continue
-
-      const lu = ml.lastUpdate ?? ml.last_update ?? new Date().toISOString()
-      const outcomes: Outcome[] = []
-
-      if (ml.home !== undefined) outcomes.push({ name: e.home, price: toAmerican(ml.home) })
-      if (ml.away !== undefined) outcomes.push({ name: e.away, price: toAmerican(ml.away) })
-      if (ml.draw !== undefined) outcomes.push({ name: "Draw",  price: toAmerican(ml.draw)  })
-
-      if (outcomes.length < 2) continue
-
-      books.push({
-        key:         bookName.toLowerCase().replace(/[^a-z0-9]/g, "_"),
-        title:       bookName,
-        last_update: lu,
-        markets:     [{ key: "h2h", last_update: lu, outcomes }],
-      })
+  // Group outcomes by bookmaker
+  const byBook = new Map<string, { home?: number; away?: number; draw?: number }>()
+  for (const o of ml.outcomes) {
+    if (!byBook.has(o.bookmaker)) byBook.set(o.bookmaker, {})
+    const entry = byBook.get(o.bookmaker)!
+    const nameLower = (o.name ?? "").toLowerCase()
+    const homeMatch = nameLower === homeName.toLowerCase() || nameLower.includes("home") || nameLower === "1"
+    const awayMatch = nameLower === awayName.toLowerCase() || nameLower.includes("away") || nameLower === "2"
+    const drawMatch = nameLower === "draw" || nameLower === "x" || nameLower === "tie"
+    if      (homeMatch) entry.home = o.odds
+    else if (awayMatch) entry.away = o.odds
+    else if (drawMatch) entry.draw = o.odds
+    else {
+      // fallback: first unknown → home, second → away
+      if (entry.home === undefined) entry.home = o.odds
+      else if (entry.away === undefined) entry.away = o.odds
     }
+  }
+
+  const books: Bookmaker[] = []
+  for (const [bkName, odds] of byBook) {
+    if (odds.home === undefined || odds.away === undefined) continue
+    const lu = new Date().toISOString()
+    const outcomes: Outcome[] = [
+      { name: homeName, price: decimalToAmerican(odds.home) },
+      { name: awayName, price: decimalToAmerican(odds.away) },
+    ]
+    if (odds.draw !== undefined) outcomes.push({ name: "Draw", price: decimalToAmerican(odds.draw) })
+    books.push({
+      key:         bkName.toLowerCase().replace(/[^a-z0-9]/g, "_"),
+      title:       bkName,
+      last_update: lu,
+      markets:     [{ key: "h2h", last_update: lu, outcomes }],
+    })
   }
 
   if (books.length === 0) return null
 
-  const sportSlug  = (e.sport?.slug  ?? "unknown").toLowerCase().replace(/-/g, "_")
-  const leagueSlug = (e.league?.slug ?? "unknown").toLowerCase().replace(/-/g, "_")
+  const sportKey = `${sdkEvent.sport}_${sdkEvent.league}`
+    .toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "")
 
   return {
-    id:           String(e.id),
-    sport_key:    `${sportSlug}_${leagueSlug}`,
-    sport_title:  e.league?.name
-      ? `${e.sport?.name ?? ""} — ${e.league.name}`.replace(/^— /, "")
-      : (e.sport?.name ?? "Sports"),
-    commence_time: eventTime(e),
-    home_team:    e.home,
-    away_team:    e.away,
-    bookmakers:   books,
+    id:            sdkEvent.id,
+    sport_key:     sportKey,
+    sport_title:   `${sdkEvent.sport} — ${sdkEvent.league}`,
+    commence_time: sdkEvent.startTime,
+    home_team:     homeName,
+    away_team:     awayName,
+    bookmakers:    books,
   }
 }
 
-// ---------- client ----------
-
 export class OddsApiClient {
-  constructor(private key: string) {}
+  private sdk: SdkClient
 
-  async getOdds(): Promise<{ events: OddsApiEvent[]; quota: number; liveEventIds: Set<string> }> {
-    // ── Step 1: fetch all events (minimal params — date filter happens in code) ──
-    const evUrl = new URL(`${BASE}/events`)
-    evUrl.searchParams.set("apiKey", this.key)
-
-    const evRes = await fetch(evUrl.toString(), { cache: "no-store" })
-    if (!evRes.ok) throw new Error(`Events fetch failed: ${evRes.status}`)
-
-    const rawAll: OddsApiIoEvent[] = await evRes.json()
-    if (!Array.isArray(rawAll)) throw new Error("Events: unexpected response format")
-
-    // Filter to today window (past 12 h → next 24 h) and de-duplicate
-    const now = Date.now()
-    const winStart = now - 12 * 60 * 60 * 1000
-    const winEnd   = now + 24 * 60 * 60 * 1000
-    const seen  = new Set<string>()
-    const today: OddsApiIoEvent[] = []
-    for (const e of rawAll) {
-      const id = String(e.id)
-      if (seen.has(id)) continue
-      const t = new Date(eventTime(e)).getTime()
-      if (!isNaN(t) && (t < winStart || t > winEnd)) continue
-      seen.add(id)
-      today.push(e)
-    }
-
-    const liveEventIds = new Set<string>()
-    for (const e of today) {
-      const s = (e.status ?? "").toLowerCase()
-      if (s === "live" || s === "inplay" || s === "in_play" || s === "in-play") {
-        liveEventIds.add(String(e.id))
-      }
-    }
-
-    if (today.length === 0) {
-      return { events: [], quota: parseInt(evRes.headers.get("x-requests-remaining") ?? "5000"), liveEventIds }
-    }
-
-    // ── Step 2: fetch odds for today's events in one call ──
-    const oddsUrl = new URL(`${BASE}/odds/multi`)
-    oddsUrl.searchParams.set("apiKey", this.key)
-    oddsUrl.searchParams.set("eventIds", today.map((e) => e.id).join(","))
-    oddsUrl.searchParams.set("includeEventDetails", "true")
-
-    const oddsRes = await fetch(oddsUrl.toString(), { cache: "no-store" })
-    const quota   = parseInt(oddsRes.headers.get("x-requests-remaining") ?? "5000")
-
-    // Build eventId → bookmakers map
-    const byId = new Map<string, Record<string, OddsApiIoMarket[]>>()
-    if (oddsRes.ok) {
-      const oddsRaw: OddsApiIoOddsEntry[] = await oddsRes.json()
-      for (const o of Array.isArray(oddsRaw) ? oddsRaw : []) {
-        const id = String(o.eventId ?? o.id ?? "")
-        if (id && id !== "undefined" && o.bookmakers) byId.set(id, o.bookmakers)
-      }
-    }
-    // Non-OK odds: log but don't crash — events without odds are filtered out below
-
-    const events: OddsApiEvent[] = []
-    for (const ev of today) {
-      const mapped = mapEvent(ev, byId.get(String(ev.id)))
-      if (mapped) events.push(mapped)
-    }
-
-    return { events, quota, liveEventIds }
+  constructor(private key: string) {
+    this.sdk = new SdkClient({ apiKey: key })
   }
 
-  // Kept for interface compatibility
+  async getOdds(): Promise<{ events: OddsApiEvent[]; quota: number; liveEventIds: Set<string> }> {
+    try {
+      // ── Step 1: discover sports and bookmakers in parallel ──────────────────
+      const [sportsRes, booksRes] = await Promise.allSettled([
+        this.sdk.getSports(),
+        this.sdk.getBookmakers(),
+      ])
+
+      const allSports: Sport[]         = sportsRes.status === "fulfilled" ? sportsRes.value : []
+      const allBooks:  SdkBookmaker[]  = booksRes.status  === "fulfilled" ? booksRes.value  : []
+
+      // Filter sports to our priority list
+      const sports = allSports
+        .filter((s) => PRIORITY_SPORTS.some((p) => s.id.toLowerCase().includes(p)))
+        .slice(0, 8)
+
+      if (sports.length === 0 && allSports.length > 0) {
+        // No priority match — take the first 8 available
+        sports.push(...allSports.slice(0, 8))
+      }
+
+      // Build bookmaker string (comma-separated IDs)
+      const bookmakerStr = allBooks.map((b) => b.id).slice(0, 30).join(",")
+
+      // ── Step 2: fetch events per sport ──────────────────────────────────────
+      const now  = Date.now()
+      const from = new Date(now - 12 * 60 * 60 * 1000).toISOString()
+      const to   = new Date(now + 24 * 60 * 60 * 1000).toISOString()
+
+      const eventFetches = sports.flatMap((sport) => [
+        this.sdk.getEvents({ sport: sport.id, status: "upcoming", from, to }).catch(() => [] as SdkEvent[]),
+        this.sdk.getEvents({ sport: sport.id, status: "live"     }).catch(() => [] as SdkEvent[]),
+      ])
+
+      const eventBatches = await Promise.all(eventFetches)
+
+      // Combine and de-duplicate
+      const liveEventIds = new Set<string>()
+      const seen         = new Set<string>()
+      const allSdkEvents: SdkEvent[] = []
+      for (let i = 0; i < eventBatches.length; i++) {
+        const isLiveBatch = i % 2 === 1
+        for (const ev of eventBatches[i]) {
+          if (seen.has(ev.id)) continue
+          seen.add(ev.id)
+          allSdkEvents.push(ev)
+          if (isLiveBatch || ev.status === "live") liveEventIds.add(ev.id)
+        }
+      }
+
+      // Cap to avoid huge odds calls
+      const todayEvents = allSdkEvents.slice(0, MAX_EVENTS)
+      if (todayEvents.length === 0) return { events: [], quota: 5000, liveEventIds }
+
+      // ── Step 3: batch odds fetch ─────────────────────────────────────────────
+      const eventIds = todayEvents.map((e) => e.id).join(",")
+      const oddsArr: EventOdds[] = bookmakerStr
+        ? await this.sdk.getOddsForMultipleEvents({ eventIds, bookmakers: bookmakerStr }).catch(() => [])
+        : []
+
+      const oddsById = new Map<string, EventOdds>()
+      for (const o of oddsArr) oddsById.set(o.eventId, o)
+
+      // ── Step 4: map to OddsApiEvent ──────────────────────────────────────────
+      const events: OddsApiEvent[] = []
+      for (const sdkEv of todayEvents) {
+        const mapped = mapSdkEventToOddsApi(sdkEv, oddsById.get(sdkEv.id))
+        if (mapped) events.push(mapped)
+      }
+
+      return { events, quota: 5000, liveEventIds }
+
+    } catch (err) {
+      if (err instanceof InvalidAPIKeyError)   throw new Error("Events fetch failed: 401")
+      if (err instanceof RateLimitExceededError) throw new Error("Events fetch failed: 429")
+      throw err
+    }
+  }
+
   async getLiveScores(_sport: string): Promise<Map<string, LiveScore>> {
     return new Map()
   }
@@ -202,62 +197,12 @@ export function getClient() {
   return new OddsApiClient(key)
 }
 
-// Fallback live-window used when event status field is absent
 export const LIVE_WINDOW_MINUTES: Record<string, number> = {
   basketball_nba: 150,
-  basketball_ncaab: 150,
-  basketball_euroleague: 150,
   baseball_mlb: 240,
   icehockey_nhl: 150,
   americanfootball_nfl: 210,
-  americanfootball_ncaaf: 210,
   soccer_epl: 130,
-  soccer_usa_mls: 130,
-  soccer_spain_la_liga: 130,
-  soccer_germany_bundesliga: 130,
-  soccer_italy_serie_a: 130,
-  soccer_france_ligue_one: 130,
-  soccer_netherlands_eredivisie: 130,
-  soccer_portugal_primeira_liga: 130,
-  soccer_mexico_ligamx: 130,
-  soccer_brazil_campeonato: 130,
-  soccer_argentina_primera_division: 130,
-  soccer_turkey_super_league: 130,
-  soccer_uefa_champs_league: 130,
-  soccer_uefa_europa_league: 130,
-  mma_mixed_martial_arts: 180,
-  boxing_boxing: 180,
-  tennis_atp_french_open: 300,
-  tennis_wta_french_open: 300,
-  tennis_atp_wimbledon: 300,
-  tennis_wta_wimbledon: 300,
-  tennis_atp_us_open: 300,
-  tennis_wta_us_open: 300,
-  tennis_atp_australian_open: 300,
-  tennis_wta_australian_open: 300,
-  cricket_test_match: 7200,
-  cricket_odi: 480,
-  cricket_t20: 210,
-  rugbyleague_nrl: 120,
-  rugbyunion_premiership: 120,
-  rugbyunion_super_rugby: 120,
-  aussierules_afl: 150,
-  darts_betway_premier_league: 120,
-  esports_lol: 180,
-  esports_csgo: 180,
-  esports_dota_2: 180,
-  esports_valorant: 180,
-  esports_r6: 180,
-  esports_overwatch: 180,
-  esports_kog: 180,
 }
 
-export const SPORT_PRIORITY = [
-  "soccer_epl",
-  "soccer_spain_la_liga",
-  "basketball_nba",
-  "baseball_mlb",
-  "icehockey_nhl",
-  "americanfootball_nfl",
-  "mma_mixed_martial_arts",
-]
+export const SPORT_PRIORITY = ["basketball", "soccer", "american-football", "baseball", "ice-hockey"]
