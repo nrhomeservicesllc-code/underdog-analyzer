@@ -7,34 +7,35 @@ import { loadBets, trackBet, untrackBet, isTracked, calcRecord } from "@/lib/tra
 
 const LIVE_INTERVAL_MS = 30_000
 const IDLE_INTERVAL_MS = 3 * 60_000
-const PICK_KEY = "sharpdog_pick"
+const LIVE_PICK_KEY     = "sharpdog_live_pick"
+const UPCOMING_PICK_KEY = "sharpdog_upcoming_pick"
 
 function fmtAmerican(n: number) { return n > 0 ? `+${n}` : `${n}` }
 
-function getSavedPickId(): string | null {
-  try { return localStorage.getItem(PICK_KEY) } catch { return null }
+function getSaved(key: string): string | null {
+  try { return localStorage.getItem(key) } catch { return null }
 }
-function savePickId(id: string) {
-  try { localStorage.setItem(PICK_KEY, id) } catch {}
+function savePick(key: string, id: string) {
+  try { localStorage.setItem(key, id) } catch {}
 }
 
-// Keep showing the same pick until its event leaves the dataset (game ended)
-function resolvePick(analyses: BetAnalysis[], savedId: string | null): BetAnalysis | null {
+// Hold the same pick until its event leaves the dataset, then auto-advance
+function resolvePick(analyses: BetAnalysis[], savedId: string | null, key: string): BetAnalysis | null {
   if (!analyses.length) return null
   if (savedId) {
     const found = analyses.find((a) => a.eventId === savedId)
     if (found) return found
   }
-  // Saved game is gone → auto-advance to next best
   const next = analyses[0]
-  savePickId(next.eventId)
+  savePick(key, next.eventId)
   return next
 }
 
-function ThePickCard({ pick, tracked, onTrack }: {
+function ThePickCard({ pick, tracked, onTrack, label }: {
   pick: BetAnalysis
   tracked: boolean
   onTrack: () => void
+  label: string
 }) {
   const { favoriteTeam: fav, underdogTeam: ud } = pick
   const evPos    = pick.expectedValuePct > 0
@@ -62,7 +63,7 @@ function ThePickCard({ pick, tracked, onTrack }: {
 
       {/* Label */}
       <div className="px-4 pb-2">
-        <span className="text-emerald-400 text-[11px] font-black uppercase tracking-[0.18em]">⭐ SharpDog Pick</span>
+        <span className="text-emerald-400 text-[11px] font-black uppercase tracking-[0.18em]">{label}</span>
       </div>
 
       {/* Matchup */}
@@ -136,19 +137,22 @@ function ThePickCard({ pick, tracked, onTrack }: {
 }
 
 export function BettingDashboard() {
-  const [data,        setData]        = useState<AnalysisResponse | null>(null)
-  const [loading,     setLoading]     = useState(true)
-  const [error,       setError]       = useState<string | null>(null)
-  const [tab,         setTab]         = useState<"pick" | "record">("pick")
-  const [trackedBets, setTrackedBets] = useState<TrackedBet[]>([])
-  const [refreshed,   setRefreshed]   = useState<Date | null>(null)
-  const [savedPickId, setSavedPickId] = useState<string | null>(null)
-  const [currentPick, setCurrentPick] = useState<BetAnalysis | null>(null)
+  const [data,            setData]            = useState<AnalysisResponse | null>(null)
+  const [loading,         setLoading]         = useState(true)
+  const [error,           setError]           = useState<string | null>(null)
+  const [tab,             setTab]             = useState<"pick" | "record">("pick")
+  const [trackedBets,     setTrackedBets]     = useState<TrackedBet[]>([])
+  const [refreshed,       setRefreshed]       = useState<Date | null>(null)
+  const [savedLiveId,     setSavedLiveId]     = useState<string | null>(null)
+  const [savedUpcomingId, setSavedUpcomingId] = useState<string | null>(null)
+  const [livePick,        setLivePick]        = useState<BetAnalysis | null>(null)
+  const [upcomingPick,    setUpcomingPick]    = useState<BetAnalysis | null>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
     setTrackedBets(loadBets())
-    setSavedPickId(getSavedPickId())
+    setSavedLiveId(getSaved(LIVE_PICK_KEY))
+    setSavedUpcomingId(getSaved(UPCOMING_PICK_KEY))
   }, [])
 
   const reloadBets = useCallback(() => setTrackedBets(loadBets()), [])
@@ -179,14 +183,20 @@ export function BettingDashboard() {
     return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
   }, [load, data?.marketStats.liveCount])
 
-  // Resolve pick whenever analyses update
+  // Resolve both picks whenever analyses update
   useEffect(() => {
     if (!data) return
-    const pick = resolvePick(data.allAnalyses, savedPickId)
-    if (!pick) { setCurrentPick(null); return }
-    setCurrentPick(pick)
-    if (pick.eventId !== savedPickId) setSavedPickId(pick.eventId)
-  }, [data, savedPickId])
+    const liveGames = data.allAnalyses.filter((a) => a.isLive)
+    const upcoming  = data.allAnalyses.filter((a) => !a.isLive)
+
+    const lp = resolvePick(liveGames, savedLiveId, LIVE_PICK_KEY)
+    setLivePick(lp)
+    if (lp && lp.eventId !== savedLiveId) setSavedLiveId(lp.eventId)
+
+    const up = resolvePick(upcoming, savedUpcomingId, UPCOMING_PICK_KEY)
+    setUpcomingPick(up)
+    if (up && up.eventId !== savedUpcomingId) setSavedUpcomingId(up.eventId)
+  }, [data, savedLiveId, savedUpcomingId])
 
   function handleTrack(a: BetAnalysis) {
     if (isTracked(a.eventId, trackedBets)) untrackBet(a.eventId)
@@ -290,26 +300,53 @@ export function BettingDashboard() {
         </div>
       </header>
 
-      {/* THE PICK tab */}
+      {/* PICKS tab */}
       {tab === "pick" && (
-        <main className="max-w-md mx-auto px-4 py-6 space-y-4">
-          {currentPick ? (
-            <>
-              <ThePickCard
-                pick={currentPick}
-                tracked={isTracked(currentPick.eventId, trackedBets)}
-                onTrack={() => handleTrack(currentPick)}
-              />
-              <p className="text-center text-zinc-700 text-[11px]">
-                Scanned {data.totalGamesScanned} games · auto-advances when this one ends
-              </p>
-            </>
-          ) : (
-            <div className="bg-zinc-950 border border-zinc-900 rounded-xl p-10 text-center">
-              <p className="text-zinc-400 font-semibold mb-1">No picks available right now</p>
-              <p className="text-zinc-600 text-sm">Auto-refreshing every {Math.round(IDLE_INTERVAL_MS / 60_000)} min</p>
+        <main className="max-w-md mx-auto px-4 py-6 space-y-6">
+
+          {/* Live pick */}
+          <section className="space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+              <span className="text-[11px] text-zinc-500 font-bold uppercase tracking-widest">Live Now</span>
             </div>
-          )}
+            {livePick ? (
+              <ThePickCard
+                pick={livePick}
+                label="🔴 Live Underdog"
+                tracked={isTracked(livePick.eventId, trackedBets)}
+                onTrack={() => handleTrack(livePick)}
+              />
+            ) : (
+              <div className="bg-zinc-950 border border-zinc-900 rounded-xl px-4 py-6 text-center">
+                <p className="text-zinc-600 text-sm">No live games right now</p>
+              </div>
+            )}
+          </section>
+
+          {/* Upcoming pick */}
+          <section className="space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-zinc-500" />
+              <span className="text-[11px] text-zinc-500 font-bold uppercase tracking-widest">Coming Up</span>
+            </div>
+            {upcomingPick ? (
+              <ThePickCard
+                pick={upcomingPick}
+                label="⭐ Next Best Pick"
+                tracked={isTracked(upcomingPick.eventId, trackedBets)}
+                onTrack={() => handleTrack(upcomingPick)}
+              />
+            ) : (
+              <div className="bg-zinc-950 border border-zinc-900 rounded-xl px-4 py-6 text-center">
+                <p className="text-zinc-600 text-sm">No upcoming games in window</p>
+              </div>
+            )}
+          </section>
+
+          <p className="text-center text-zinc-700 text-[11px]">
+            {data.totalGamesScanned} games scanned · auto-advances when each game ends
+          </p>
         </main>
       )}
 
