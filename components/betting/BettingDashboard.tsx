@@ -337,10 +337,20 @@ export function BettingDashboard() {
 
   // API key is set but returned an error — show specific error screen
   if (data.hasKey && data.apiError && data.allAnalyses.length === 0) {
-    const isQuota    = data.errorCode === 422
+    const isQuota     = data.errorCode === 422
     const isRateLimit = data.errorCode === 429
-    const title = isQuota ? "Monthly Quota Exhausted" : isRateLimit ? "Rate Limited" : "API Key Rejected"
-    const icon  = isQuota ? "📊" : isRateLimit ? "⏱" : "🔑"
+    const isBadKey    = data.errorCode === 401
+    const isSetupErr  = !isQuota && !isRateLimit && !isBadKey
+
+    const title = isQuota
+      ? "Hourly Quota Reached"
+      : isRateLimit
+      ? "Rate Limited"
+      : isBadKey
+      ? "API Key Rejected"
+      : "API Request Error"
+    const icon = isQuota ? "📊" : isRateLimit ? "⏱" : isBadKey ? "🔑" : "⚠️"
+
     return (
       <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 gap-6">
         <span className="text-2xl font-black">Sharp<span className="text-emerald-400">Dog</span></span>
@@ -349,23 +359,23 @@ export function BettingDashboard() {
             <span className="text-2xl">{icon}</span>
             <p className="text-white font-bold text-lg">{title}</p>
           </div>
-          <p className="text-red-400 text-sm leading-relaxed">{data.apiError}</p>
+          <p className="text-red-400 text-sm leading-relaxed font-mono">{data.apiError}</p>
           {isQuota && (
             <div className="bg-zinc-900 rounded-lg px-3 py-2.5 space-y-1">
               <p className="text-zinc-400 text-[11px] font-bold uppercase tracking-wider">How to fix</p>
-              <p className="text-zinc-500 text-xs">Go to the-odds-api.com → upgrade your plan for more monthly requests.</p>
+              <p className="text-zinc-500 text-xs">Wait a few minutes — your hourly quota at odds-api.io will reset automatically.</p>
             </div>
           )}
-          {!isQuota && !isRateLimit && (
+          {(isBadKey || isSetupErr) && (
             <div className="bg-zinc-900 rounded-lg px-3 py-2.5 space-y-1.5">
               <p className="text-zinc-400 text-[11px] font-bold uppercase tracking-wider">How to fix</p>
-              <p className="text-zinc-500 text-xs">1. Go to the-odds-api.com/manage → regenerate your key</p>
-              <p className="text-zinc-500 text-xs">2. Vercel → Settings → Environment Variables → edit ODDS_API_KEY</p>
-              <p className="text-zinc-500 text-xs">3. Paste new key with <strong className="text-zinc-300">Production</strong> checked → Save → Redeploy</p>
+              <p className="text-zinc-500 text-xs">1. Log in to <strong className="text-zinc-300">odds-api.io</strong> → copy your API key</p>
+              <p className="text-zinc-500 text-xs">2. Vercel → Settings → Environment Variables → edit <code className="text-zinc-300">ODDS_API_KEY</code></p>
+              <p className="text-zinc-500 text-xs">3. Paste key with <strong className="text-zinc-300">Production</strong> checked → Save → Redeploy</p>
             </div>
           )}
           <button onClick={load} className="w-full bg-emerald-700 hover:bg-emerald-600 text-white py-2.5 rounded-xl text-sm font-bold">
-            {isRateLimit ? "Retry Now" : "Retry"}
+            {isRateLimit || isQuota ? "Retry Now" : "Retry"}
           </button>
         </div>
       </div>

@@ -122,25 +122,30 @@ export class OddsApiClient {
     const from = new Date(now - 12 * 60 * 60 * 1000).toISOString()
     const to   = new Date(now + 24 * 60 * 60 * 1000).toISOString()
 
-    // Fetch live events and upcoming events in parallel
+    // Fetch live and upcoming events in parallel using status query param
+    const buildEventsUrl = (status: string) => {
+      const u = new URL(`${BASE}/events`)
+      u.searchParams.set("apiKey", this.key)
+      u.searchParams.set("status", status)
+      u.searchParams.set("from", from)
+      u.searchParams.set("to", to)
+      return u.toString()
+    }
+
     const [liveRes, upcomingRes] = await Promise.all([
-      fetch(`${BASE}/events/live?apiKey=${this.key}`, { cache: "no-store" }),
-      fetch(
-        `${BASE}/events?apiKey=${this.key}&status=upcoming&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
-        { cache: "no-store" }
-      ),
+      fetch(buildEventsUrl("live"),     { cache: "no-store" }),
+      fetch(buildEventsUrl("upcoming"), { cache: "no-store" }),
     ])
 
     if (!liveRes.ok && !upcomingRes.ok) {
-      // Both failed — surface the more informative error
-      const status = !liveRes.ok ? liveRes.status : upcomingRes.status
+      const status = liveRes.status !== 200 ? liveRes.status : upcomingRes.status
       throw new Error(`Events fetch failed: ${status}`)
     }
 
     const liveEvents: OddsApiIoEvent[]     = liveRes.ok     ? await liveRes.json()     : []
     const upcomingEvents: OddsApiIoEvent[] = upcomingRes.ok ? await upcomingRes.json() : []
 
-    // Combine, de-duplicate by id
+    // De-duplicate by id
     const seen   = new Set<string>()
     const allRaw: OddsApiIoEvent[] = []
     for (const e of [...liveEvents, ...upcomingEvents]) {
@@ -148,12 +153,10 @@ export class OddsApiClient {
       if (!seen.has(id)) { seen.add(id); allRaw.push(e) }
     }
 
-    const liveEventIds = new Set(
-      liveEvents.map((e) => String(e.id))
-    )
+    const liveEventIds = new Set(liveEvents.map((e) => String(e.id)))
 
-    // Also treat any event with status "live" as live
-    for (const e of upcomingEvents) {
+    // Any event flagged status=live in either response is live
+    for (const e of allRaw) {
       if ((e.status ?? "").toLowerCase() === "live") liveEventIds.add(String(e.id))
     }
 
@@ -162,27 +165,15 @@ export class OddsApiClient {
       return { events: [], quota, liveEventIds }
     }
 
-    // Fetch odds for all events in one batch call
+    // Batch odds fetch — try "ML" market first (odds-api.io format), fallback to no filter
     const eventIds = allRaw.map((e) => e.id).join(",")
-    const oddsUrl  = new URL(`${BASE}/odds/multi`)
-    oddsUrl.searchParams.set("apiKey", this.key)
-    oddsUrl.searchParams.set("eventIds", eventIds)
-    oddsUrl.searchParams.set("market", "moneyline")
-
-    const oddsRes = await fetch(oddsUrl.toString(), { cache: "no-store" })
-    const quota   = this.extractQuota(oddsRes)
-
-    if (!oddsRes.ok) {
-      throw new Error(`Odds fetch failed: ${oddsRes.status}`)
-    }
-
-    const oddsData: OddsApiIoEventWithOdds[] = await oddsRes.json()
+    const oddsData = await this.fetchOddsWithFallback(eventIds)
+    const quota    = 5000 // odds-api.io free tier; real value from header if available
 
     // Build lookup: eventId → bookmakers
     const oddsById = new Map<string, Record<string, OddsApiIoMarket[]>>()
     for (const o of Array.isArray(oddsData) ? oddsData : []) {
-      const asAny = o as { id?: unknown; eventId?: unknown }
-      const id = String(o.id ?? asAny.eventId)
+      const id = String((o as OddsApiIoEventWithOdds & { eventId?: string }).eventId ?? o.id)
       if (id && o.bookmakers) oddsById.set(id, o.bookmakers)
     }
 
@@ -196,6 +187,31 @@ export class OddsApiClient {
     }
 
     return { events, quota, liveEventIds }
+  }
+
+  private async fetchOddsWithFallback(eventIds: string): Promise<OddsApiIoEventWithOdds[]> {
+    // Try each market name variant that odds-api.io might use
+    const markets = ["ML", "moneyline", ""]
+    let lastStatus = 0
+
+    for (const market of markets) {
+      const url = new URL(`${BASE}/odds/multi`)
+      url.searchParams.set("apiKey", this.key)
+      url.searchParams.set("eventIds", eventIds)
+      if (market) url.searchParams.set("market", market)
+      url.searchParams.set("includeEventDetails", "true")
+
+      const res = await fetch(url.toString(), { cache: "no-store" })
+      if (res.ok) return (await res.json()) as OddsApiIoEventWithOdds[]
+      lastStatus = res.status
+
+      // 401/429 — don't retry with different market, it won't help
+      if (res.status === 401 || res.status === 429) {
+        throw new Error(`Odds fetch failed: ${res.status}`)
+      }
+    }
+
+    throw new Error(`Odds fetch failed: ${lastStatus}`)
   }
 
   // Legacy method kept for interface compatibility — live status now comes from events API
