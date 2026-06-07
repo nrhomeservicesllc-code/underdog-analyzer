@@ -111,6 +111,19 @@ function mapSdkEventToOddsApi(
   }
 }
 
+// The SDK returns raw JSON — actual API shape may differ from TypeScript types.
+// Handles plain arrays, {data:[...]}, {bookmakers:[...]}, {results:[...]}, etc.
+function asArray<T>(val: unknown): T[] {
+  if (Array.isArray(val)) return val as T[]
+  if (val && typeof val === "object") {
+    for (const key of ["data", "bookmakers", "results", "items", "selected"]) {
+      const v = (val as Record<string, unknown>)[key]
+      if (Array.isArray(v)) return v as T[]
+    }
+  }
+  return []
+}
+
 export class OddsApiClient {
   private sdk: SdkClient
 
@@ -131,8 +144,8 @@ export class OddsApiClient {
         this.sdk.getSelectedBookmakers(),
       ])
 
-      const allBooks: SdkBookmaker[] = allBooksRes.status === "fulfilled" ? allBooksRes.value : []
-      const selBooks: SdkBookmaker[] = selBooksRes.status === "fulfilled" ? selBooksRes.value : []
+      const allBooks: SdkBookmaker[] = allBooksRes.status === "fulfilled" ? asArray(allBooksRes.value) : []
+      const selBooks: SdkBookmaker[] = selBooksRes.status === "fulfilled" ? asArray(selBooksRes.value) : []
 
       debug.allBooks       = allBooks.length
       debug.selectedBooks  = selBooks.length
@@ -165,10 +178,12 @@ export class OddsApiClient {
       const eventErrors: string[] = []
       const eventBatches = await Promise.all(
         SPORT_IDS.map((sportId, i) =>
-          this.sdk.getEvents({ sport: sportId, from, to }).catch((e: Error) => {
-            if (i < 2) eventErrors.push(`${sportId}: ${e.message}`)
-            return [] as SdkEvent[]
-          })
+          this.sdk.getEvents({ sport: sportId, from, to })
+            .then((r) => asArray<SdkEvent>(r))
+            .catch((e: Error) => {
+              if (i < 2) eventErrors.push(`${sportId}: ${e.message}`)
+              return [] as SdkEvent[]
+            })
         )
       )
 
@@ -197,7 +212,7 @@ export class OddsApiClient {
       const eventIds = todayEvents.map((e) => e.id).join(",")
       let oddsArr: EventOdds[] = []
       try {
-        oddsArr = await this.sdk.getOddsForMultipleEvents({ eventIds, bookmakers: bookmakerStr })
+        oddsArr = asArray<EventOdds>(await this.sdk.getOddsForMultipleEvents({ eventIds, bookmakers: bookmakerStr }))
       } catch (e) {
         const msg = `Odds: ${(e as Error).message}`
         debug.oddsError = debug.oddsError ? `${debug.oddsError} | ${msg}` : msg
