@@ -37,8 +37,8 @@ function mapSdkEventToOddsApi(
 ): OddsApiEvent | null {
   if (!oddsEntry || !oddsEntry.markets?.length) return null
 
-  const homeName = sdkEvent.homeParticipant.name
-  const awayName = sdkEvent.awayParticipant.name
+  const homeName = sdkEvent.homeParticipant?.name ?? "Home"
+  const awayName = sdkEvent.awayParticipant?.name ?? "Away"
 
   // Find moneyline market — try common names
   const ml = oddsEntry.markets.find((m: MarketOdds) => {
@@ -54,8 +54,8 @@ function mapSdkEventToOddsApi(
     if (!byBook.has(o.bookmaker)) byBook.set(o.bookmaker, {})
     const entry = byBook.get(o.bookmaker)!
     const nameLower = (o.name ?? "").toLowerCase()
-    const homeMatch = nameLower === homeName.toLowerCase() || nameLower.includes("home") || nameLower === "1"
-    const awayMatch = nameLower === awayName.toLowerCase() || nameLower.includes("away") || nameLower === "2"
+    const homeMatch = nameLower === homeName.toLowerCase() || nameLower === "home" || nameLower === "1"
+    const awayMatch = nameLower === awayName.toLowerCase() || nameLower === "away" || nameLower === "2"
     const drawMatch = nameLower === "draw" || nameLower === "x" || nameLower === "tie"
     if      (homeMatch) entry.home = o.odds
     else if (awayMatch) entry.away = o.odds
@@ -86,13 +86,15 @@ function mapSdkEventToOddsApi(
 
   if (books.length === 0) return null
 
-  const sportKey = `${sdkEvent.sport}_${sdkEvent.league}`
+  const sport  = sdkEvent.sport  ?? "sports"
+  const league = sdkEvent.league ?? ""
+  const sportKey = `${sport}_${league}`
     .toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "")
 
   return {
     id:            sdkEvent.id,
     sport_key:     sportKey,
-    sport_title:   `${sdkEvent.sport} — ${sdkEvent.league}`,
+    sport_title:   league ? `${sport} — ${league}` : sport,
     commence_time: sdkEvent.startTime,
     home_team:     homeName,
     away_team:     awayName,
@@ -119,17 +121,18 @@ export class OddsApiClient {
       const allBooks:  SdkBookmaker[]  = booksRes.status  === "fulfilled" ? booksRes.value  : []
 
       // Filter sports to our priority list
-      const sports = allSports
+      const validSports = allSports.filter((s) => !!s.id)
+      const sports = validSports
         .filter((s) => PRIORITY_SPORTS.some((p) => s.id.toLowerCase().includes(p)))
         .slice(0, 8)
 
-      if (sports.length === 0 && allSports.length > 0) {
+      if (sports.length === 0 && validSports.length > 0) {
         // No priority match — take the first 8 available
-        sports.push(...allSports.slice(0, 8))
+        sports.push(...validSports.slice(0, 8))
       }
 
-      // Build bookmaker string (comma-separated IDs)
-      const bookmakerStr = allBooks.map((b) => b.id).slice(0, 30).join(",")
+      // Build bookmaker string (comma-separated IDs), skip any with missing id
+      const bookmakerStr = allBooks.filter((b) => !!b.id).map((b) => b.id).slice(0, 30).join(",")
 
       // ── Step 2: fetch events per sport ──────────────────────────────────────
       const now  = Date.now()
