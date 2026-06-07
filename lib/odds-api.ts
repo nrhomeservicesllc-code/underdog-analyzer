@@ -23,7 +23,7 @@ export interface OddsDebug {
 // Known sport IDs for odds-api.io — used directly (getSports() omits auth header)
 const SPORT_IDS = [
   "basketball",
-  "soccer",
+  "football",          // odds-api.io uses "football" not "soccer"
   "american-football",
   "baseball",
   "ice-hockey",
@@ -35,7 +35,7 @@ const SPORT_IDS = [
 // Fallback bookmaker IDs if account has none selected
 const FALLBACK_BOOKMAKERS = "singbet,bet365,pinnacle,betfair,1xbet,williamhill,unibet,bwin"
 
-const MAX_EVENTS = 20
+const MAX_EVENTS = 10  // odds-api.io /odds/multi limit
 
 function decimalToAmerican(n: number): number {
   if (!n || n <= 1) return 0
