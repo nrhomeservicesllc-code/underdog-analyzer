@@ -9,15 +9,16 @@ export interface LiveScore {
 }
 
 export interface OddsDebug {
-  sportsFound:    number
-  sportIds:       string[]
-  allBooks:       number
-  selectedBooks:  number
-  bookmakerStr:   string
-  eventsFound:    number
-  oddsEntries:    number
-  oddsError:      string | null
-  mappedEvents:   number
+  sportsFound:     number
+  sportIds:        string[]
+  allBooks:        number
+  selectedBooks:   number
+  firstBookmaker:  string
+  bookmakerStr:    string
+  eventsFound:     number
+  oddsEntries:     number
+  oddsError:       string | null
+  mappedEvents:    number
 }
 
 // Known sport IDs for odds-api.io — used directly (getSports() omits auth header)
@@ -120,7 +121,7 @@ export class OddsApiClient {
   async getOdds(): Promise<{ events: OddsApiEvent[]; quota: number; liveEventIds: Set<string>; debug: OddsDebug }> {
     const debug: OddsDebug = {
       sportsFound: 0, sportIds: [], allBooks: 0, selectedBooks: 0,
-      bookmakerStr: "", eventsFound: 0, oddsEntries: 0, oddsError: null, mappedEvents: 0,
+      firstBookmaker: "", bookmakerStr: "", eventsFound: 0, oddsEntries: 0, oddsError: null, mappedEvents: 0,
     }
 
     try {
@@ -133,12 +134,18 @@ export class OddsApiClient {
       const allBooks: SdkBookmaker[] = allBooksRes.status === "fulfilled" ? allBooksRes.value : []
       const selBooks: SdkBookmaker[] = selBooksRes.status === "fulfilled" ? selBooksRes.value : []
 
-      debug.allBooks      = allBooks.length
-      debug.selectedBooks = selBooks.length
+      debug.allBooks       = allBooks.length
+      debug.selectedBooks  = selBooks.length
+      debug.firstBookmaker = allBooks[0] ? JSON.stringify(allBooks[0]) : "none"
 
-      // Prefer selected bookmakers; fall back to all (first 15); then hardcoded
+      // Extract bookmaker ID — try id, slug, key, name in case API field differs from SDK type
+      const getBookId = (b: SdkBookmaker): string => {
+        const raw = b as unknown as Record<string, string>
+        return b.id || raw.slug || raw.key || b.name || ""
+      }
+
       const booksToUse = selBooks.length > 0 ? selBooks : allBooks.slice(0, 15)
-      const bookmakerStr = booksToUse.filter((b) => !!b.id).map((b) => b.id).join(",")
+      const bookmakerStr = booksToUse.map(getBookId).filter(Boolean).join(",")
         || FALLBACK_BOOKMAKERS
 
       debug.bookmakerStr = bookmakerStr.slice(0, 120)

@@ -101,6 +101,7 @@ export interface AnalysisResponse {
     sportIds: string[]
     allBooks: number
     selectedBooks: number
+    firstBookmaker: string
     bookmakerStr: string
     eventsFound: number
     oddsEntries: number

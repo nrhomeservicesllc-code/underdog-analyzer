@@ -349,6 +349,7 @@ export function BettingDashboard() {
               <p>Sports found: <span className="text-zinc-400">{data.oddsDebug.sportsFound}</span> [{data.oddsDebug.sportIds.join(", ")}]</p>
               <p>Events found: <span className="text-zinc-400">{data.oddsDebug.eventsFound}</span></p>
               <p>Bookmakers: <span className="text-zinc-400">{data.oddsDebug.allBooks} all / {data.oddsDebug.selectedBooks} selected</span></p>
+              <p>First bookmaker obj: <span className="text-zinc-400 break-all">{data.oddsDebug.firstBookmaker}</span></p>
               <p>Odds entries returned: <span className="text-zinc-400">{data.oddsDebug.oddsEntries}</span></p>
               {data.oddsDebug.oddsError && (
                 <p className="text-red-500">Odds error: {data.oddsDebug.oddsError}</p>
