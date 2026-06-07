@@ -8,22 +8,28 @@ export interface LiveScore {
   lastUpdate: string
 }
 
-// Priority sport IDs as odds-api.io uses them (discovered via getSports())
+export interface OddsDebug {
+  sportsFound:    number
+  sportIds:       string[]
+  allBooks:       number
+  selectedBooks:  number
+  bookmakerStr:   string
+  eventsFound:    number
+  oddsEntries:    number
+  oddsError:      string | null
+  mappedEvents:   number
+}
+
+// Priority sport IDs as odds-api.io uses them
 const PRIORITY_SPORTS = [
-  "basketball",
-  "soccer",
-  "football",           // some APIs use football for soccer
-  "american-football",
-  "baseball",
-  "ice-hockey",
-  "tennis",
-  "mma",
-  "boxing",
-  "rugby",
-  "cricket",
+  "basketball", "soccer", "football", "american-football",
+  "baseball", "ice-hockey", "tennis", "mma", "boxing", "rugby", "cricket",
 ]
 
-const MAX_EVENTS = 60  // cap to avoid huge odds/multi calls
+// Fallback bookmakers if the API returns nothing
+const FALLBACK_BOOKMAKERS = "singbet,bet365,pinnacle,betfair,1xbet,williamhill,unibet,bwin,betway,marathonbet"
+
+const MAX_EVENTS = 20
 
 function decimalToAmerican(n: number): number {
   if (!n || n <= 1) return 0
@@ -40,31 +46,29 @@ function mapSdkEventToOddsApi(
   const homeName = sdkEvent.homeParticipant?.name ?? "Home"
   const awayName = sdkEvent.awayParticipant?.name ?? "Away"
 
-  // Find moneyline market — try common names
+  // Find moneyline market — accept any common variant, fall back to first market
   const ml = oddsEntry.markets.find((m: MarketOdds) => {
     const mk = (m.market ?? "").toLowerCase()
-    return mk === "moneyline" || mk === "ml" || mk === "h2h" || mk === "1x2" || mk === "match winner"
+    return mk === "moneyline" || mk === "ml" || mk === "h2h" || mk === "1x2" || mk === "match winner" || mk === "match result"
   }) ?? oddsEntry.markets[0]
 
   if (!ml?.outcomes?.length) return null
 
-  // Group outcomes by bookmaker
+  // Group outcomes by bookmaker — outcomes array is flat: [{name, odds, bookmaker}]
   const byBook = new Map<string, { home?: number; away?: number; draw?: number }>()
   for (const o of ml.outcomes) {
+    if (!o.bookmaker) continue
     if (!byBook.has(o.bookmaker)) byBook.set(o.bookmaker, {})
-    const entry = byBook.get(o.bookmaker)!
-    const nameLower = (o.name ?? "").toLowerCase()
-    const homeMatch = nameLower === homeName.toLowerCase() || nameLower === "home" || nameLower === "1"
-    const awayMatch = nameLower === awayName.toLowerCase() || nameLower === "away" || nameLower === "2"
-    const drawMatch = nameLower === "draw" || nameLower === "x" || nameLower === "tie"
-    if      (homeMatch) entry.home = o.odds
-    else if (awayMatch) entry.away = o.odds
-    else if (drawMatch) entry.draw = o.odds
-    else {
-      // fallback: first unknown → home, second → away
-      if (entry.home === undefined) entry.home = o.odds
-      else if (entry.away === undefined) entry.away = o.odds
-    }
+    const entry   = byBook.get(o.bookmaker)!
+    const nameLow = (o.name ?? "").toLowerCase()
+    const homeLow = homeName.toLowerCase()
+    const awayLow = awayName.toLowerCase()
+
+    if      (nameLow === homeLow || nameLow === "home" || nameLow === "1")          entry.home = o.odds
+    else if (nameLow === awayLow || nameLow === "away" || nameLow === "2")          entry.away = o.odds
+    else if (nameLow === "draw" || nameLow === "x" || nameLow === "tie")            entry.draw = o.odds
+    else if (entry.home === undefined)                                               entry.home = o.odds
+    else if (entry.away === undefined)                                               entry.away = o.odds
   }
 
   const books: Bookmaker[] = []
@@ -109,81 +113,105 @@ export class OddsApiClient {
     this.sdk = new SdkClient({ apiKey: key })
   }
 
-  async getOdds(): Promise<{ events: OddsApiEvent[]; quota: number; liveEventIds: Set<string> }> {
+  async getOdds(): Promise<{ events: OddsApiEvent[]; quota: number; liveEventIds: Set<string>; debug: OddsDebug }> {
+    const debug: OddsDebug = {
+      sportsFound: 0, sportIds: [], allBooks: 0, selectedBooks: 0,
+      bookmakerStr: "", eventsFound: 0, oddsEntries: 0, oddsError: null, mappedEvents: 0,
+    }
+
     try {
-      // ── Step 1: discover sports and bookmakers in parallel ──────────────────
-      const [sportsRes, booksRes] = await Promise.allSettled([
+      // ── Step 1: discover sports + bookmakers in parallel ───────────────────
+      const [sportsRes, allBooksRes, selBooksRes] = await Promise.allSettled([
         this.sdk.getSports(),
         this.sdk.getBookmakers(),
+        this.sdk.getSelectedBookmakers(),
       ])
 
-      const allSports: Sport[]         = sportsRes.status === "fulfilled" ? sportsRes.value : []
-      const allBooks:  SdkBookmaker[]  = booksRes.status  === "fulfilled" ? booksRes.value  : []
+      const allSports:  Sport[]        = sportsRes.status    === "fulfilled" ? sportsRes.value    : []
+      const allBooks:   SdkBookmaker[] = allBooksRes.status  === "fulfilled" ? allBooksRes.value  : []
+      const selBooks:   SdkBookmaker[] = selBooksRes.status  === "fulfilled" ? selBooksRes.value  : []
 
-      // Filter sports to our priority list
+      debug.allBooks      = allBooks.length
+      debug.selectedBooks = selBooks.length
+
+      // Prefer selected bookmakers; fall back to all; then hardcoded fallback
+      const booksToUse = selBooks.length > 0 ? selBooks
+                       : allBooks.length > 0  ? allBooks.slice(0, 15)
+                       : []
+      const bookmakerStr = booksToUse
+        .filter((b) => !!b.id).map((b) => b.id).join(",") || FALLBACK_BOOKMAKERS
+
+      debug.bookmakerStr = bookmakerStr.slice(0, 120)
+
+      // Filter sports to priority list; fall back to first 8 available
       const validSports = allSports.filter((s) => !!s.id)
-      const sports = validSports
+      let sports = validSports
         .filter((s) => PRIORITY_SPORTS.some((p) => s.id.toLowerCase().includes(p)))
         .slice(0, 8)
+      if (sports.length === 0 && validSports.length > 0) sports = validSports.slice(0, 8)
 
-      if (sports.length === 0 && validSports.length > 0) {
-        // No priority match — take the first 8 available
-        sports.push(...validSports.slice(0, 8))
+      debug.sportsFound = sports.length
+      debug.sportIds    = sports.map((s) => s.id)
+
+      if (sports.length === 0) {
+        return { events: [], quota: 5000, liveEventIds: new Set(), debug }
       }
 
-      // Build bookmaker string (comma-separated IDs), skip any with missing id
-      const bookmakerStr = allBooks.filter((b) => !!b.id).map((b) => b.id).slice(0, 30).join(",")
-
-      // ── Step 2: fetch events per sport ──────────────────────────────────────
+      // ── Step 2: fetch events per sport — single call, no status filter ─────
       const now  = Date.now()
       const from = new Date(now - 12 * 60 * 60 * 1000).toISOString()
       const to   = new Date(now + 24 * 60 * 60 * 1000).toISOString()
 
-      const eventFetches = sports.flatMap((sport) => [
-        this.sdk.getEvents({ sport: sport.id, status: "upcoming", from, to }).catch(() => [] as SdkEvent[]),
-        this.sdk.getEvents({ sport: sport.id, status: "live"     }).catch(() => [] as SdkEvent[]),
-      ])
+      const eventBatches = await Promise.all(
+        sports.map((s) =>
+          this.sdk.getEvents({ sport: s.id, from, to }).catch(() => [] as SdkEvent[])
+        )
+      )
 
-      const eventBatches = await Promise.all(eventFetches)
-
-      // Combine and de-duplicate
       const liveEventIds = new Set<string>()
       const seen         = new Set<string>()
       const allSdkEvents: SdkEvent[] = []
-      for (let i = 0; i < eventBatches.length; i++) {
-        const isLiveBatch = i % 2 === 1
-        for (const ev of eventBatches[i]) {
+      for (const batch of eventBatches) {
+        for (const ev of batch) {
           if (seen.has(ev.id)) continue
           seen.add(ev.id)
           allSdkEvents.push(ev)
-          if (isLiveBatch || ev.status === "live") liveEventIds.add(ev.id)
+          if (ev.status === "live") liveEventIds.add(ev.id)
         }
       }
 
-      // Cap to avoid huge odds calls
-      const todayEvents = allSdkEvents.slice(0, MAX_EVENTS)
-      if (todayEvents.length === 0) return { events: [], quota: 5000, liveEventIds }
+      debug.eventsFound = allSdkEvents.length
 
-      // ── Step 3: batch odds fetch ─────────────────────────────────────────────
+      const todayEvents = allSdkEvents.slice(0, MAX_EVENTS)
+      if (todayEvents.length === 0) return { events: [], quota: 5000, liveEventIds, debug }
+
+      // ── Step 3: batch odds — surface errors instead of silencing them ──────
       const eventIds = todayEvents.map((e) => e.id).join(",")
-      const oddsArr: EventOdds[] = bookmakerStr
-        ? await this.sdk.getOddsForMultipleEvents({ eventIds, bookmakers: bookmakerStr }).catch(() => [])
-        : []
+      let oddsArr: EventOdds[] = []
+      try {
+        oddsArr = await this.sdk.getOddsForMultipleEvents({ eventIds, bookmakers: bookmakerStr })
+      } catch (e) {
+        debug.oddsError = (e as Error).message
+      }
+
+      debug.oddsEntries = oddsArr.length
 
       const oddsById = new Map<string, EventOdds>()
       for (const o of oddsArr) oddsById.set(o.eventId, o)
 
-      // ── Step 4: map to OddsApiEvent ──────────────────────────────────────────
+      // ── Step 4: map to OddsApiEvent ────────────────────────────────────────
       const events: OddsApiEvent[] = []
       for (const sdkEv of todayEvents) {
         const mapped = mapSdkEventToOddsApi(sdkEv, oddsById.get(sdkEv.id))
         if (mapped) events.push(mapped)
       }
 
-      return { events, quota: 5000, liveEventIds }
+      debug.mappedEvents = events.length
+
+      return { events, quota: 5000, liveEventIds, debug }
 
     } catch (err) {
-      if (err instanceof InvalidAPIKeyError)   throw new Error("Events fetch failed: 401")
+      if (err instanceof InvalidAPIKeyError)     throw new Error("Events fetch failed: 401")
       if (err instanceof RateLimitExceededError) throw new Error("Events fetch failed: 429")
       throw err
     }

@@ -342,6 +342,21 @@ export function BettingDashboard() {
             )}
           </section>
 
+          {/* Debug panel — only visible when no picks found */}
+          {!livePick && !upcomingPick && data.oddsDebug && (
+            <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4 space-y-1 font-mono text-[10px] text-zinc-600">
+              <p className="text-zinc-500 font-bold mb-2">API diagnostic</p>
+              <p>Sports found: <span className="text-zinc-400">{data.oddsDebug.sportsFound}</span> [{data.oddsDebug.sportIds.join(", ")}]</p>
+              <p>Events found: <span className="text-zinc-400">{data.oddsDebug.eventsFound}</span></p>
+              <p>Bookmakers: <span className="text-zinc-400">{data.oddsDebug.allBooks} all / {data.oddsDebug.selectedBooks} selected</span></p>
+              <p>Odds entries returned: <span className="text-zinc-400">{data.oddsDebug.oddsEntries}</span></p>
+              {data.oddsDebug.oddsError && (
+                <p className="text-red-500">Odds error: {data.oddsDebug.oddsError}</p>
+              )}
+              <p>Mapped events: <span className="text-zinc-400">{data.oddsDebug.mappedEvents}</span></p>
+            </div>
+          )}
+
           <p className="text-center text-zinc-700 text-[11px]">
             {data.totalGamesScanned} games scanned · refreshes every hour
           </p>

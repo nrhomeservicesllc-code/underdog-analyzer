@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { getClient } from "@/lib/odds-api"
-import type { LiveScore } from "@/lib/odds-api"
+import type { LiveScore, OddsDebug } from "@/lib/odds-api"
 import { analyzeAll } from "@/lib/analyzer"
 import { demoEvents } from "@/lib/demo"
 import type { OddsApiEvent } from "@/types/betting"
@@ -19,6 +19,7 @@ export async function GET() {
     const liveScores = new Map<string, LiveScore>()
     let apiError: string | undefined
     let errorCode: number | undefined
+    let oddsDebug: OddsDebug | undefined
 
     if (!hasKey) {
       // No key configured — show demo data
@@ -36,7 +37,8 @@ export async function GET() {
         const client = getClient()
 
         // Single call fetches all events + odds across all sports
-        const { events, quota: q, liveEventIds } = await client.getOdds()
+        const { events, quota: q, liveEventIds, debug } = await client.getOdds()
+        oddsDebug = debug
 
         quota = q
         allEvents = events
@@ -94,6 +96,7 @@ export async function GET() {
           allAnalyses: [],
           marketStats: { avgVigPct: 0, avgOddsGap: 0, positiveEvCount: 0, strongBuyCount: 0, liveCount: 0 },
           apiQuotaRemaining: quota,
+          oddsDebug,
         },
         { headers: { "Cache-Control": "no-store, max-age=0" } }
       )
@@ -145,6 +148,7 @@ export async function GET() {
           liveCount: live.length,
         },
         apiQuotaRemaining: quota,
+        oddsDebug,
       },
       { headers: { "Cache-Control": "no-store, max-age=0" } }
     )

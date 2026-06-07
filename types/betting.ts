@@ -96,6 +96,17 @@ export interface AnalysisResponse {
     liveCount: number
   }
   apiQuotaRemaining?: number
+  oddsDebug?: {
+    sportsFound: number
+    sportIds: string[]
+    allBooks: number
+    selectedBooks: number
+    bookmakerStr: string
+    eventsFound: number
+    oddsEntries: number
+    oddsError: string | null
+    mappedEvents: number
+  }
 }
 
 export interface TrackedBet {
