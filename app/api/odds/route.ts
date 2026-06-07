@@ -64,7 +64,10 @@ export async function GET() {
         const match = raw.match(/\b(4\d\d)\b/)
         errorCode   = match ? parseInt(match[1]) : undefined
 
-        if (errorCode === 401) {
+        if (raw.startsWith("SETUP_BOOKMAKERS:")) {
+          errorCode = 0
+          apiError  = raw.replace("SETUP_BOOKMAKERS: ", "")
+        } else if (errorCode === 401) {
           apiError = "API key rejected (401) — your key is invalid or deactivated. Go to odds-api.io to check your key."
         } else if (errorCode === 422) {
           apiError = "Quota exhausted (422) — you've used all requests. Upgrade at odds-api.io."

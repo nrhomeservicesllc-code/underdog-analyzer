@@ -230,32 +230,49 @@ export function BettingDashboard() {
 
   if (!data) return null
 
-  // ── API key / quota error ──
+  // ── API key / quota / setup error ──
   if (data.hasKey && data.apiError && data.allAnalyses.length === 0) {
+    const isSetup     = data.errorCode === 0
     const isQuota     = data.errorCode === 422
     const isRateLimit = data.errorCode === 429
     const isBadKey    = data.errorCode === 401
-    const title = isQuota ? "Hourly Quota Reached" : isRateLimit ? "Rate Limited" : isBadKey ? "API Key Rejected" : "API Request Error"
-    const icon  = isQuota ? "📊" : isRateLimit ? "⏱" : isBadKey ? "🔑" : "⚠️"
+    const title = isSetup ? "One-Time Setup Required"
+                : isQuota ? "Hourly Quota Reached"
+                : isRateLimit ? "Rate Limited"
+                : isBadKey ? "API Key Rejected"
+                : "API Request Error"
+    const icon  = isSetup ? "📋" : isQuota ? "📊" : isRateLimit ? "⏱" : isBadKey ? "🔑" : "⚠️"
     return (
       <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 gap-6">
         <span className="text-2xl font-black">Sharp<span className="text-emerald-400">Dog</span></span>
-        <div className="bg-zinc-950 border border-red-900/60 rounded-2xl p-6 max-w-md w-full space-y-4">
+        <div className="bg-zinc-950 border border-amber-900/60 rounded-2xl p-6 max-w-md w-full space-y-4">
           <div className="flex items-center gap-3">
             <span className="text-2xl">{icon}</span>
             <p className="text-white font-bold text-lg">{title}</p>
           </div>
-          <p className="text-red-400 text-sm font-mono leading-relaxed">{data.apiError}</p>
-          {isQuota && (
-            <p className="text-zinc-500 text-xs">Your hourly quota resets automatically — try again in a few minutes.</p>
-          )}
-          {(isBadKey || (!isQuota && !isRateLimit)) && (
-            <div className="bg-zinc-900 rounded-lg px-3 py-2.5 space-y-1.5">
-              <p className="text-zinc-400 text-[11px] font-bold uppercase tracking-wider">How to fix</p>
-              <p className="text-zinc-500 text-xs">1. Log in to <strong className="text-zinc-300">odds-api.io</strong> → copy your API key</p>
-              <p className="text-zinc-500 text-xs">2. Vercel → Settings → Environment Variables → edit <code className="text-zinc-300">ODDS_API_KEY</code></p>
-              <p className="text-zinc-500 text-xs">3. Paste key → Save → Redeploy</p>
+          {isSetup ? (
+            <div className="space-y-3">
+              <p className="text-zinc-400 text-sm">Your API key works, but you need to select bookmakers in your odds-api.io account before odds data can be fetched.</p>
+              <div className="bg-zinc-900 rounded-lg px-3 py-2.5 space-y-1.5">
+                <p className="text-zinc-400 text-[11px] font-bold uppercase tracking-wider">How to fix (one time)</p>
+                <p className="text-zinc-500 text-xs">1. Go to <strong className="text-zinc-300">odds-api.io/manage</strong></p>
+                <p className="text-zinc-500 text-xs">2. Find "Bookmakers" → select 1–2 bookmakers (e.g. Bet365, Pinnacle)</p>
+                <p className="text-zinc-500 text-xs">3. Save, then come back and hit Retry below</p>
+              </div>
             </div>
+          ) : (
+            <>
+              <p className="text-red-400 text-sm font-mono leading-relaxed">{data.apiError}</p>
+              {isQuota && <p className="text-zinc-500 text-xs">Your quota resets automatically — try again soon.</p>}
+              {(isBadKey || (!isSetup && !isQuota && !isRateLimit)) && (
+                <div className="bg-zinc-900 rounded-lg px-3 py-2.5 space-y-1.5">
+                  <p className="text-zinc-400 text-[11px] font-bold uppercase tracking-wider">How to fix</p>
+                  <p className="text-zinc-500 text-xs">1. Log in to <strong className="text-zinc-300">odds-api.io</strong> → copy your API key</p>
+                  <p className="text-zinc-500 text-xs">2. Vercel → Settings → Environment Variables → edit <code className="text-zinc-300">ODDS_API_KEY</code></p>
+                  <p className="text-zinc-500 text-xs">3. Paste key → Save → Redeploy</p>
+                </div>
+              )}
+            </>
           )}
           <button onClick={load} className="w-full bg-emerald-700 hover:bg-emerald-600 text-white py-2.5 rounded-xl text-sm font-bold">Retry</button>
         </div>

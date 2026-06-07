@@ -138,16 +138,20 @@ export class OddsApiClient {
       debug.selectedBooks  = selBooks.length
       debug.firstBookmaker = allBooks[0] ? JSON.stringify(allBooks[0]) : "none"
 
-      // Extract bookmaker ID — try id, slug, key, name in case API field differs from SDK type
-      const getBookId = (b: SdkBookmaker): string => {
-        const raw = b as unknown as Record<string, string>
-        return b.id || raw.slug || raw.key || b.name || ""
+      // The API bookmaker objects have {name, active} — no id/slug field.
+      // The identifier for odds calls is the name lowercased with spaces removed.
+      const toBookId = (b: SdkBookmaker): string =>
+        ((b as unknown as Record<string, unknown>).name as string ?? b.id ?? "")
+          .toLowerCase().replace(/\s+/g, "")
+
+      if (selBooks.length === 0) {
+        throw new Error(
+          "SETUP_BOOKMAKERS: Your odds-api.io account has no bookmakers selected. " +
+          "Log in at odds-api.io/manage, select 1–2 bookmakers, then refresh."
+        )
       }
 
-      const booksToUse = selBooks.length > 0 ? selBooks : allBooks.slice(0, 15)
-      const bookmakerStr = booksToUse.map(getBookId).filter(Boolean).join(",")
-        || FALLBACK_BOOKMAKERS
-
+      const bookmakerStr = selBooks.map(toBookId).filter(Boolean).join(",")
       debug.bookmakerStr = bookmakerStr.slice(0, 120)
 
       // ── Step 2: fetch events using known sport IDs (no getSports() call) ──
