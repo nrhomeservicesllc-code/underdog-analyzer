@@ -253,6 +253,14 @@ export class OddsApiClient {
       if (idMatchCount === 0 && oddsArr.length > 0) {
         const raw = oddsArr[0] as unknown as Record<string, unknown>
         debug.oddsError = `ID mismatch. Event[0]=${String(todayEvents[0]?.id)} | OddsEntry fields: ${Object.keys(raw).join(",")}`
+      } else if (events.length === 0 && idMatchCount > 0) {
+        // IDs match but mapping fails — show first matched entry structure
+        const matched = [...oddsById.values()][0] as unknown as Record<string, unknown>
+        const markets = matched.markets ?? matched.odds ?? matched.data
+        const firstMarket = Array.isArray(markets) && markets.length > 0
+          ? JSON.stringify(markets[0]).slice(0, 200)
+          : `no markets (keys: ${Object.keys(matched).join(",")})`
+        debug.oddsError = `Mapping failed. First market: ${firstMarket}`
       }
 
       debug.mappedEvents = events.length
