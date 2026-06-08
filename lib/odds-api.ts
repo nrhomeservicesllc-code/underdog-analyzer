@@ -232,9 +232,13 @@ export class OddsApiClient {
 
       debug.oddsEntries = oddsArr.length
 
-      // Normalize IDs to strings — API may return numeric eventId
+      // SDK type says eventId but actual API field may be id, event_id, etc.
       const oddsById = new Map<string, EventOdds>()
-      for (const o of oddsArr) oddsById.set(String(o.eventId), o)
+      for (const o of oddsArr) {
+        const raw = o as unknown as Record<string, unknown>
+        const id = o.eventId ?? raw.id ?? raw.event_id ?? raw.eventID
+        if (id != null) oddsById.set(String(id), o)
+      }
 
       // ── Step 4: map to OddsApiEvent ────────────────────────────────────────
       let idMatchCount = 0
@@ -247,8 +251,8 @@ export class OddsApiClient {
       }
 
       if (idMatchCount === 0 && oddsArr.length > 0) {
-        // IDs still don't match — show sample IDs in debug to diagnose
-        debug.oddsError = `ID mismatch: event[0]=${String(todayEvents[0]?.id)} odds[0]=${String(oddsArr[0]?.eventId)}`
+        const raw = oddsArr[0] as unknown as Record<string, unknown>
+        debug.oddsError = `ID mismatch. Event[0]=${String(todayEvents[0]?.id)} | OddsEntry fields: ${Object.keys(raw).join(",")}`
       }
 
       debug.mappedEvents = events.length
