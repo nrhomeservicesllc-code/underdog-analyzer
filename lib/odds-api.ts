@@ -169,11 +169,9 @@ export class OddsApiClient {
 
       const bookmakerStr = selBooks.map(toBookId).filter(Boolean).join(",")
       if (!bookmakerStr) {
-        throw new Error(
-          `SETUP_BOOKMAKERS: Could not read bookmaker IDs from account. ` +
-          `Selected object: ${JSON.stringify(selBooks[0])}. ` +
-          `Contact support or try re-selecting bookmakers at odds-api.io/manage.`
-        )
+        // Can't extract IDs — surface raw object in diagnostic instead of crashing
+        debug.oddsError = `Cannot read bookmaker IDs. First selected obj: ${JSON.stringify(selBooks[0])}`
+        return { events: [], quota: 5000, liveEventIds: new Set(), debug }
       }
       debug.bookmakerStr = bookmakerStr.slice(0, 120)
 
