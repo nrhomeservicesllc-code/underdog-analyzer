@@ -254,10 +254,20 @@ export class OddsApiClient {
       if (events.length === 0 && oddsArr.length > 0) {
         const raw = oddsArr[0] as unknown as Record<string, unknown>
         const bks = raw.bookmakers
-        const bksInfo = bks && typeof bks === "object" && !Array.isArray(bks)
-          ? `keys=${Object.keys(bks as object).slice(0, 3).join(",")}`
-          : `type=${typeof bks} isArray=${Array.isArray(bks)}`
-        debug.oddsError = `Mapping failed. Entry keys: ${Object.keys(raw).join(",")} | bookmakers: ${bksInfo}`
+        let bksInfo = `type=${typeof bks} isArray=${Array.isArray(bks)}`
+        if (bks && typeof bks === "object" && !Array.isArray(bks)) {
+          const entries = Object.entries(bks as Record<string, unknown>)
+          if (entries.length > 0) {
+            const [firstKey, firstVal] = entries[0]
+            const valStr = JSON.stringify(firstVal).slice(0, 200)
+            bksInfo = `key="${firstKey}" val=${valStr}`
+          } else {
+            bksInfo = "empty object"
+          }
+        } else if (Array.isArray(bks)) {
+          bksInfo = `array len=${(bks as unknown[]).length} first=${JSON.stringify((bks as unknown[])[0]).slice(0, 150)}`
+        }
+        debug.oddsError = `Mapping failed. home=${String(raw.home)} away=${String(raw.away)} | bookmakers: ${bksInfo}`
       }
 
       debug.mappedEvents = events.length
