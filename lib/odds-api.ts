@@ -153,11 +153,10 @@ export class OddsApiClient {
         ? JSON.stringify(selBooks[0])
         : (allBooks[0] ? JSON.stringify(allBooks[0]) : "none")
 
-      // Try every plausible field name the API might use for the bookmaker identifier
+      // Selected bookmakers come back as plain strings ("Hard Rock", "Betplay")
       const toBookId = (b: SdkBookmaker): string => {
-        const raw = b as unknown as Record<string, unknown>
-        const val = raw.id ?? raw.slug ?? raw.key ?? raw.bookmaker ?? raw.name ?? b.id ?? ""
-        return String(val).toLowerCase().replace(/\s+/g, "")
+        const raw = typeof b === "string" ? b : (b as unknown as Record<string, unknown>).name ?? b.id ?? ""
+        return String(raw).toLowerCase().replace(/\s+/g, "-")
       }
 
       if (selBooks.length === 0) {
@@ -167,17 +166,16 @@ export class OddsApiClient {
         )
       }
 
+      // Set sport debug fields before any early return
+      debug.sportsFound = SPORT_IDS.length
+      debug.sportIds    = SPORT_IDS
+
       const bookmakerStr = selBooks.map(toBookId).filter(Boolean).join(",")
       if (!bookmakerStr) {
-        // Can't extract IDs — surface raw object in diagnostic instead of crashing
         debug.oddsError = `Cannot read bookmaker IDs. First selected obj: ${JSON.stringify(selBooks[0])}`
         return { events: [], quota: 5000, liveEventIds: new Set(), debug }
       }
       debug.bookmakerStr = bookmakerStr.slice(0, 120)
-
-      // ── Step 2: fetch events using known sport IDs (no getSports() call) ──
-      debug.sportsFound = SPORT_IDS.length
-      debug.sportIds    = SPORT_IDS
 
       const now  = Date.now()
       const from = new Date(now - 12 * 60 * 60 * 1000).toISOString()
