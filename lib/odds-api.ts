@@ -195,31 +195,30 @@ export class OddsApiClient {
       const from = new Date(now - 12 * 60 * 60 * 1000).toISOString()
       const to   = new Date(now + 24 * 60 * 60 * 1000).toISOString()
 
-      // ── Step 2: fetch events across all sports ─────────────────────────────
-      const eventErrors: string[] = []
-      const eventBatches = await Promise.all(
-        SPORT_IDS.map((sportId, i) =>
-          this.sdk.getEvents({ sport: sportId, from, to })
-            .then((r) => asArray<SdkEvent>(r))
-            .catch((e: Error) => {
-              if (i < 2) eventErrors.push(`${sportId}: ${e.message}`)
-              return [] as SdkEvent[]
-            })
-        )
-      )
-
-      if (eventErrors.length) {
-        debug.oddsError = eventErrors.join(" | ")
-      }
-
+      // ── Step 2: fetch events sequentially to avoid rate limits ───────────────
+      // Sequential with 350ms gap; stop as soon as we have MAX_EVENTS
+      const sportErrors: string[] = []
       const seen         = new Set<string>()
       const allSdkEvents: SdkEvent[] = []
-      for (const batch of eventBatches) {
-        for (const ev of batch) {
-          if (seen.has(ev.id)) continue
-          seen.add(ev.id)
-          allSdkEvents.push(ev)
+
+      for (let i = 0; i < SPORT_IDS.length; i++) {
+        if (allSdkEvents.length >= MAX_EVENTS) break
+        if (i > 0) await new Promise((r) => setTimeout(r, 350))
+        const sportId = SPORT_IDS[i]
+        try {
+          const batch = asArray<SdkEvent>(await this.sdk.getEvents({ sport: sportId, from, to }))
+          for (const ev of batch) {
+            if (seen.has(ev.id)) continue
+            seen.add(ev.id)
+            allSdkEvents.push(ev)
+          }
+        } catch (e: unknown) {
+          sportErrors.push(`${sportId}: ${(e as Error).message}`)
         }
+      }
+
+      if (sportErrors.length) {
+        debug.oddsError = sportErrors.slice(0, 2).join(" | ")
       }
 
       debug.eventsFound = allSdkEvents.length
