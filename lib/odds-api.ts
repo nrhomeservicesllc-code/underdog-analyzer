@@ -138,26 +138,31 @@ export class OddsApiClient {
     }
 
     try {
-      // ── Step 1: bookmakers only — getSports() omits auth so always returns empty ──
-      const [allBooksRes, selBooksRes] = await Promise.allSettled([
-        this.sdk.getBookmakers(),
+      // ── Step 1: authenticated bookmakers call to get real slugs ────────────
+      // SDK's getBookmakers() omits auth and returns {name,active} with no slug.
+      // Call with auth manually to get the actual bookmaker ID fields.
+      const BASE = "https://api2.odds-api.io/v3"
+      const [authBooksRaw, selBooksRes] = await Promise.allSettled([
+        fetch(`${BASE}/bookmakers?apiKey=${this.key}`, {
+          headers: { "User-Agent": "odds-api-io-node-sdk/1.0.0" },
+        }).then((r) => r.json()),
         this.sdk.getSelectedBookmakers(),
       ])
 
-      const allBooks: SdkBookmaker[] = allBooksRes.status === "fulfilled" ? asArray(allBooksRes.value) : []
-      const selBooks: SdkBookmaker[] = selBooksRes.status === "fulfilled" ? asArray(selBooksRes.value) : []
+      const allBooks: SdkBookmaker[] = authBooksRaw.status === "fulfilled" ? asArray(authBooksRaw.value) : []
+      const selBooks: SdkBookmaker[] = selBooksRes.status  === "fulfilled" ? asArray(selBooksRes.value)  : []
 
       debug.allBooks       = allBooks.length
       debug.selectedBooks  = selBooks.length
-      debug.firstBookmaker = selBooks[0]
-        ? JSON.stringify(selBooks[0])
-        : (allBooks[0] ? JSON.stringify(allBooks[0]) : "none")
+      // Show first authenticated bookmaker — should now include slug/id field
+      debug.firstBookmaker = allBooks[0] ? JSON.stringify(allBooks[0]) : (selBooks[0] ? JSON.stringify(selBooks[0]) : "none")
 
-      // Selected bookmakers come back as plain strings ("Hard Rock", "Betplay")
-      // Slug format: lowercase, no spaces/special chars ("Hard Rock" → "hardrock")
+      // Extract ID: try id, slug, key, name in order; fall back to string value
       const toBookId = (b: SdkBookmaker): string => {
-        const raw = typeof b === "string" ? b : (b as unknown as Record<string, unknown>).name ?? b.id ?? ""
-        return String(raw).toLowerCase().replace(/[^a-z0-9]/g, "")
+        if (typeof b === "string") return b  // pass selected name as-is first
+        const raw = b as unknown as Record<string, unknown>
+        const val = raw.id ?? raw.slug ?? raw.key ?? raw.name ?? b.id ?? ""
+        return String(val)
       }
 
       if (selBooks.length === 0) {
