@@ -21,19 +21,21 @@ export interface OddsDebug {
   mappedEvents:    number
 }
 
-// Known sport IDs for odds-api.io
+// Major sports first — odds-api.io coverage is best for these
 const SPORT_IDS = [
-  "basketball",
-  "football",
   "american-football",
+  "basketball",
   "baseball",
   "ice-hockey",
+  "football",   // soccer
   "tennis",
   "mma",
   "boxing",
 ]
 
-const MAX_EVENTS = 10  // odds-api.io /odds/multi limit
+const ODDS_BATCH_SIZE   = 10   // odds-api.io /odds/multi max event IDs
+const MAX_EVENTS_TOTAL  = 80   // collect up to this many events across all sports
+const NEED_MAPPED       = 2    // stop batching once we have a live + upcoming
 
 function decimalToAmerican(n: number): number {
   if (!n || n <= 1) return 0
@@ -41,8 +43,9 @@ function decimalToAmerican(n: number): number {
   return Math.round(-100 / (n - 1))
 }
 
-// Maps a raw odds-api.io response entry (actual shape: {id, home, away, date, status, sport, league, bookmakers})
-// where bookmakers is Record<string, Array<{name: string, odds: Array<Record<string, number>>}>>
+// Maps a raw odds-api.io response entry.
+// Actual shape: {id, home, away, date, status, sport, league, urls, bookmakers}
+// where bookmakers is Record<bookmakerName, Array<{name: string, odds: Array<Record<string,number>>}>>
 function mapOddsEntryToEvent(raw: Record<string, unknown>): { event: OddsApiEvent; isLive: boolean } | null {
   const id = String(raw.id ?? "")
   if (!id) return null
@@ -62,7 +65,7 @@ function mapOddsEntryToEvent(raw: Record<string, unknown>): { event: OddsApiEven
 
     const rawMarkets = markets as RawMarket[]
 
-    // Prefer moneyline/h2h market; fall back to first
+    // Prefer moneyline/h2h; fall back to first market
     const ml = rawMarkets.find((m) => {
       const mk = (m.name ?? "").toLowerCase()
       return ["moneyline", "ml", "h2h", "1x2", "match winner", "match result", "fulltime result"].includes(mk)
@@ -152,7 +155,7 @@ export class OddsApiClient {
     }
 
     try {
-      // ── Step 1: get bookmaker slugs ────────────────────────────────────────
+      // ── Step 1: get selected bookmaker IDs ────────────────────────────────
       const BASE = "https://api2.odds-api.io/v3"
       const [authBooksRaw, selBooksRes] = await Promise.allSettled([
         fetch(`${BASE}/bookmakers?apiKey=${this.key}`, {
@@ -162,10 +165,10 @@ export class OddsApiClient {
       ])
 
       const allBooks = authBooksRaw.status === "fulfilled" ? asArray<Record<string, unknown>>(authBooksRaw.value) : []
-      const selBooks = selBooksRes.status  === "fulfilled" ? asArray<unknown>(selBooksRes.value)  : []
+      const selBooks = selBooksRes.status  === "fulfilled" ? asArray<unknown>(selBooksRes.value) : []
 
-      debug.allBooks      = allBooks.length
-      debug.selectedBooks = selBooks.length
+      debug.allBooks       = allBooks.length
+      debug.selectedBooks  = selBooks.length
       debug.firstBookmaker = allBooks[0] ? JSON.stringify(allBooks[0]) : (selBooks[0] ? JSON.stringify(selBooks[0]) : "none")
 
       const toBookId = (b: unknown): string => {
@@ -195,14 +198,15 @@ export class OddsApiClient {
       const from = new Date(now - 12 * 60 * 60 * 1000).toISOString()
       const to   = new Date(now + 24 * 60 * 60 * 1000).toISOString()
 
-      // ── Step 2: fetch events sequentially to avoid rate limits ───────────────
-      // Sequential with 350ms gap; stop as soon as we have MAX_EVENTS
-      const sportErrors: string[] = []
+      // ── Step 2: collect events sequentially across all sports ─────────────
+      // 350ms delay between requests to avoid rate limits.
+      // Collect up to MAX_EVENTS_TOTAL so we have enough candidates.
       const seen         = new Set<string>()
       const allSdkEvents: SdkEvent[] = []
+      const sportErrors: string[] = []
 
       for (let i = 0; i < SPORT_IDS.length; i++) {
-        if (allSdkEvents.length >= MAX_EVENTS) break
+        if (allSdkEvents.length >= MAX_EVENTS_TOTAL) break
         if (i > 0) await new Promise((r) => setTimeout(r, 350))
         const sportId = SPORT_IDS[i]
         try {
@@ -217,60 +221,55 @@ export class OddsApiClient {
         }
       }
 
-      if (sportErrors.length) {
-        debug.oddsError = sportErrors.slice(0, 2).join(" | ")
-      }
-
+      if (sportErrors.length) debug.oddsError = sportErrors.slice(0, 2).join(" | ")
       debug.eventsFound = allSdkEvents.length
 
-      const todayEvents = allSdkEvents.slice(0, MAX_EVENTS)
-      if (todayEvents.length === 0) return { events: [], quota: 5000, liveEventIds: new Set(), debug }
+      if (allSdkEvents.length === 0) return { events: [], quota: 5000, liveEventIds: new Set(), debug }
 
-      // ── Step 3: fetch odds ─────────────────────────────────────────────────
-      const eventIds = todayEvents.map((e) => e.id).join(",")
-      let oddsArr: EventOdds[] = []
-      try {
-        oddsArr = asArray<EventOdds>(await this.sdk.getOddsForMultipleEvents({ eventIds, bookmakers: bookmakerStr }))
-      } catch (e) {
-        const msg = `Odds: ${(e as Error).message}`
-        debug.oddsError = debug.oddsError ? `${debug.oddsError} | ${msg}` : msg
-      }
-
-      debug.oddsEntries = oddsArr.length
-
-      // ── Step 4: map odds entries directly ──────────────────────────────────
-      // Actual response shape: {id, home, away, date, status, sport, league, urls, bookmakers}
-      // where bookmakers is Record<string, Array<{name, odds}>>
-      const liveEventIds = new Set<string>()
+      // ── Step 3: fetch odds in batches of 10 until we get mapped results ───
+      // Bet365/Stake only cover major leagues — skip batches with empty odds.
+      const liveEventIds   = new Set<string>()
       const events: OddsApiEvent[] = []
-      for (const o of oddsArr) {
-        const raw    = o as unknown as Record<string, unknown>
-        const result = mapOddsEntryToEvent(raw)
-        if (!result) continue
-        events.push(result.event)
-        if (result.isLive) liveEventIds.add(result.event.id)
-      }
+      let   totalOddsEntries = 0
+      let   lastBatchError: string | null = null
 
-      if (events.length === 0 && oddsArr.length > 0) {
-        const raw = oddsArr[0] as unknown as Record<string, unknown>
-        const bks = raw.bookmakers
-        let bksInfo = `type=${typeof bks} isArray=${Array.isArray(bks)}`
-        if (bks && typeof bks === "object" && !Array.isArray(bks)) {
-          const entries = Object.entries(bks as Record<string, unknown>)
-          if (entries.length > 0) {
-            const [firstKey, firstVal] = entries[0]
-            const valStr = JSON.stringify(firstVal).slice(0, 200)
-            bksInfo = `key="${firstKey}" val=${valStr}`
-          } else {
-            bksInfo = "empty object"
-          }
-        } else if (Array.isArray(bks)) {
-          bksInfo = `array len=${(bks as unknown[]).length} first=${JSON.stringify((bks as unknown[])[0]).slice(0, 150)}`
+      for (let offset = 0; offset < allSdkEvents.length; offset += ODDS_BATCH_SIZE) {
+        if (events.length >= NEED_MAPPED) break
+
+        const batchEvents = allSdkEvents.slice(offset, offset + ODDS_BATCH_SIZE)
+        const eventIds    = batchEvents.map((e) => e.id).join(",")
+
+        if (offset > 0) await new Promise((r) => setTimeout(r, 350))
+
+        let oddsArr: EventOdds[] = []
+        try {
+          oddsArr = asArray<EventOdds>(
+            await this.sdk.getOddsForMultipleEvents({ eventIds, bookmakers: bookmakerStr })
+          )
+        } catch (e: unknown) {
+          lastBatchError = (e as Error).message.slice(0, 80)
+          continue
         }
-        debug.oddsError = `Mapping failed. home=${String(raw.home)} away=${String(raw.away)} | bookmakers: ${bksInfo}`
+
+        totalOddsEntries += oddsArr.length
+
+        for (const o of oddsArr) {
+          const raw    = o as unknown as Record<string, unknown>
+          const result = mapOddsEntryToEvent(raw)
+          if (!result) continue
+          events.push(result.event)
+          if (result.isLive) liveEventIds.add(result.event.id)
+        }
       }
 
+      debug.oddsEntries = totalOddsEntries
       debug.mappedEvents = events.length
+
+      if (events.length === 0) {
+        debug.oddsError = lastBatchError
+          ? `No odds with bookmaker coverage found (last error: ${lastBatchError})`
+          : `No odds with bookmaker coverage found across ${allSdkEvents.length} events`
+      }
 
       return { events, quota: 5000, liveEventIds, debug }
 
@@ -300,4 +299,4 @@ export const LIVE_WINDOW_MINUTES: Record<string, number> = {
   soccer_epl: 130,
 }
 
-export const SPORT_PRIORITY = ["basketball", "soccer", "american-football", "baseball", "ice-hockey"]
+export const SPORT_PRIORITY = ["american-football", "basketball", "baseball", "ice-hockey", "football"]
