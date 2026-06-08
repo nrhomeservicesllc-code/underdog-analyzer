@@ -154,9 +154,10 @@ export class OddsApiClient {
         : (allBooks[0] ? JSON.stringify(allBooks[0]) : "none")
 
       // Selected bookmakers come back as plain strings ("Hard Rock", "Betplay")
+      // Slug format: lowercase, no spaces/special chars ("Hard Rock" → "hardrock")
       const toBookId = (b: SdkBookmaker): string => {
         const raw = typeof b === "string" ? b : (b as unknown as Record<string, unknown>).name ?? b.id ?? ""
-        return String(raw).toLowerCase().replace(/\s+/g, "-")
+        return String(raw).toLowerCase().replace(/[^a-z0-9]/g, "")
       }
 
       if (selBooks.length === 0) {
