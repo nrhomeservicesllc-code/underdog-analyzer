@@ -1,5 +1,5 @@
 import { OddsAPIClient as SdkClient, InvalidAPIKeyError, RateLimitExceededError } from "odds-api-io"
-import type { Event as SdkEvent, EventOdds, Bookmaker as SdkBookmaker, MarketOdds } from "odds-api-io"
+import type { Event as SdkEvent, EventOdds } from "odds-api-io"
 import type { OddsApiEvent, Bookmaker, Outcome } from "@/types/betting"
 
 export interface LiveScore {
@@ -21,10 +21,10 @@ export interface OddsDebug {
   mappedEvents:    number
 }
 
-// Known sport IDs for odds-api.io — used directly (getSports() omits auth header)
+// Known sport IDs for odds-api.io
 const SPORT_IDS = [
   "basketball",
-  "football",          // odds-api.io uses "football" not "soccer"
+  "football",
   "american-football",
   "baseball",
   "ice-hockey",
@@ -32,9 +32,6 @@ const SPORT_IDS = [
   "mma",
   "boxing",
 ]
-
-// Fallback bookmaker IDs if account has none selected
-const FALLBACK_BOOKMAKERS = "singbet,bet365,pinnacle,betfair,1xbet,williamhill,unibet,bwin"
 
 const MAX_EVENTS = 10  // odds-api.io /odds/multi limit
 
@@ -44,47 +41,60 @@ function decimalToAmerican(n: number): number {
   return Math.round(-100 / (n - 1))
 }
 
-function mapSdkEventToOddsApi(
-  sdkEvent: SdkEvent,
-  oddsEntry: EventOdds | undefined
-): OddsApiEvent | null {
-  if (!oddsEntry || !oddsEntry.markets?.length) return null
+// Maps a raw odds-api.io response entry (actual shape: {id, home, away, date, status, sport, league, bookmakers})
+// where bookmakers is Record<string, Array<{name: string, odds: Array<Record<string, number>>}>>
+function mapOddsEntryToEvent(raw: Record<string, unknown>): { event: OddsApiEvent; isLive: boolean } | null {
+  const id = String(raw.id ?? "")
+  if (!id) return null
 
-  const homeName = sdkEvent.homeParticipant?.name ?? "Home"
-  const awayName = sdkEvent.awayParticipant?.name ?? "Away"
+  const homeName = String(raw.home ?? "Home")
+  const awayName = String(raw.away ?? "Away")
+  const isLive   = String(raw.status ?? "").toLowerCase() === "live"
 
-  // Find moneyline market — accept any common variant, fall back to first market
-  const ml = oddsEntry.markets.find((m: MarketOdds) => {
-    const mk = (m.market ?? "").toLowerCase()
-    return mk === "moneyline" || mk === "ml" || mk === "h2h" || mk === "1x2" || mk === "match winner" || mk === "match result"
-  }) ?? oddsEntry.markets[0]
+  const bookmakerData = raw.bookmakers
+  if (!bookmakerData || typeof bookmakerData !== "object" || Array.isArray(bookmakerData)) return null
 
-  if (!ml?.outcomes?.length) return null
-
-  // Group flat outcomes array by bookmaker
-  const byBook = new Map<string, { home?: number; away?: number; draw?: number }>()
-  for (const o of ml.outcomes) {
-    if (!o.bookmaker) continue
-    if (!byBook.has(o.bookmaker)) byBook.set(o.bookmaker, {})
-    const entry   = byBook.get(o.bookmaker)!
-    const nameLow = (o.name ?? "").toLowerCase()
-
-    if      (nameLow === homeName.toLowerCase() || nameLow === "home" || nameLow === "1") entry.home = o.odds
-    else if (nameLow === awayName.toLowerCase() || nameLow === "away" || nameLow === "2") entry.away = o.odds
-    else if (nameLow === "draw" || nameLow === "x" || nameLow === "tie")                  entry.draw = o.odds
-    else if (entry.home === undefined)                                                     entry.home = o.odds
-    else if (entry.away === undefined)                                                     entry.away = o.odds
-  }
-
+  type RawMarket = { name?: string; odds?: Record<string, unknown>[] }
   const books: Bookmaker[] = []
-  for (const [bkName, odds] of byBook) {
-    if (odds.home === undefined || odds.away === undefined) continue
+
+  for (const [bkName, markets] of Object.entries(bookmakerData as Record<string, unknown>)) {
+    if (!Array.isArray(markets) || markets.length === 0) continue
+
+    const rawMarkets = markets as RawMarket[]
+
+    // Prefer moneyline/h2h market; fall back to first
+    const ml = rawMarkets.find((m) => {
+      const mk = (m.name ?? "").toLowerCase()
+      return ["moneyline", "ml", "h2h", "1x2", "match winner", "match result", "fulltime result"].includes(mk)
+    }) ?? rawMarkets[0]
+
+    if (!ml?.odds?.length) continue
+
+    let homeOdds: number | undefined
+    let awayOdds: number | undefined
+    let drawOdds: number | undefined
+
+    for (const sel of ml.odds) {
+      for (const [k, v] of Object.entries(sel)) {
+        if (typeof v !== "number") continue
+        const kl = k.toLowerCase()
+        if      (kl === "home" || kl === "1" || kl === homeName.toLowerCase()) homeOdds = v
+        else if (kl === "away" || kl === "2" || kl === awayName.toLowerCase()) awayOdds = v
+        else if (kl === "draw" || kl === "x" || kl === "tie")                  drawOdds = v
+        else if (homeOdds === undefined) homeOdds = v
+        else if (awayOdds === undefined) awayOdds = v
+      }
+    }
+
+    if (homeOdds === undefined || awayOdds === undefined) continue
+
     const lu = new Date().toISOString()
     const outcomes: Outcome[] = [
-      { name: homeName, price: decimalToAmerican(odds.home) },
-      { name: awayName, price: decimalToAmerican(odds.away) },
+      { name: homeName, price: decimalToAmerican(homeOdds) },
+      { name: awayName, price: decimalToAmerican(awayOdds) },
     ]
-    if (odds.draw !== undefined) outcomes.push({ name: "Draw", price: decimalToAmerican(odds.draw) })
+    if (drawOdds !== undefined) outcomes.push({ name: "Draw", price: decimalToAmerican(drawOdds) })
+
     books.push({
       key:         bkName.toLowerCase().replace(/[^a-z0-9]/g, "_"),
       title:       bkName,
@@ -95,23 +105,27 @@ function mapSdkEventToOddsApi(
 
   if (books.length === 0) return null
 
-  const sport  = sdkEvent.sport  ?? "sports"
-  const league = sdkEvent.league ?? ""
-  const sportKey = `${sport}_${league}`
+  const sportObj  = raw.sport  as Record<string, unknown> | undefined
+  const leagueObj = raw.league as Record<string, unknown> | undefined
+  const sportName  = String(sportObj?.name  ?? sportObj?.slug  ?? "Sports")
+  const leagueName = String(leagueObj?.name ?? leagueObj?.slug ?? "")
+  const sportKey   = `${sportName}_${leagueName}`
     .toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "")
 
   return {
-    id:            sdkEvent.id,
-    sport_key:     sportKey,
-    sport_title:   league ? `${sport} — ${league}` : sport,
-    commence_time: sdkEvent.startTime,
-    home_team:     homeName,
-    away_team:     awayName,
-    bookmakers:    books,
+    event: {
+      id,
+      sport_key:     sportKey,
+      sport_title:   leagueName ? `${sportName} — ${leagueName}` : sportName,
+      commence_time: String(raw.date ?? new Date().toISOString()),
+      home_team:     homeName,
+      away_team:     awayName,
+      bookmakers:    books,
+    },
+    isLive,
   }
 }
 
-// The SDK returns raw JSON — actual API shape may differ from TypeScript types.
 // Handles plain arrays, {data:[...]}, {bookmakers:[...]}, {results:[...]}, etc.
 function asArray<T>(val: unknown): T[] {
   if (Array.isArray(val)) return val as T[]
@@ -138,9 +152,7 @@ export class OddsApiClient {
     }
 
     try {
-      // ── Step 1: authenticated bookmakers call to get real slugs ────────────
-      // SDK's getBookmakers() omits auth and returns {name,active} with no slug.
-      // Call with auth manually to get the actual bookmaker ID fields.
+      // ── Step 1: get bookmaker slugs ────────────────────────────────────────
       const BASE = "https://api2.odds-api.io/v3"
       const [authBooksRaw, selBooksRes] = await Promise.allSettled([
         fetch(`${BASE}/bookmakers?apiKey=${this.key}`, {
@@ -149,20 +161,17 @@ export class OddsApiClient {
         this.sdk.getSelectedBookmakers(),
       ])
 
-      const allBooks: SdkBookmaker[] = authBooksRaw.status === "fulfilled" ? asArray(authBooksRaw.value) : []
-      const selBooks: SdkBookmaker[] = selBooksRes.status  === "fulfilled" ? asArray(selBooksRes.value)  : []
+      const allBooks = authBooksRaw.status === "fulfilled" ? asArray<Record<string, unknown>>(authBooksRaw.value) : []
+      const selBooks = selBooksRes.status  === "fulfilled" ? asArray<unknown>(selBooksRes.value)  : []
 
-      debug.allBooks       = allBooks.length
-      debug.selectedBooks  = selBooks.length
-      // Show first authenticated bookmaker — should now include slug/id field
+      debug.allBooks      = allBooks.length
+      debug.selectedBooks = selBooks.length
       debug.firstBookmaker = allBooks[0] ? JSON.stringify(allBooks[0]) : (selBooks[0] ? JSON.stringify(selBooks[0]) : "none")
 
-      // Extract ID: try id, slug, key, name in order; fall back to string value
-      const toBookId = (b: SdkBookmaker): string => {
-        if (typeof b === "string") return b  // pass selected name as-is first
-        const raw = b as unknown as Record<string, unknown>
-        const val = raw.id ?? raw.slug ?? raw.key ?? raw.name ?? b.id ?? ""
-        return String(val)
+      const toBookId = (b: unknown): string => {
+        if (typeof b === "string") return b
+        const raw = b as Record<string, unknown>
+        return String(raw.id ?? raw.slug ?? raw.key ?? raw.name ?? "")
       }
 
       if (selBooks.length === 0) {
@@ -172,7 +181,6 @@ export class OddsApiClient {
         )
       }
 
-      // Set sport debug fields before any early return
       debug.sportsFound = SPORT_IDS.length
       debug.sportIds    = SPORT_IDS
 
@@ -187,6 +195,7 @@ export class OddsApiClient {
       const from = new Date(now - 12 * 60 * 60 * 1000).toISOString()
       const to   = new Date(now + 24 * 60 * 60 * 1000).toISOString()
 
+      // ── Step 2: fetch events across all sports ─────────────────────────────
       const eventErrors: string[] = []
       const eventBatches = await Promise.all(
         SPORT_IDS.map((sportId, i) =>
@@ -203,7 +212,6 @@ export class OddsApiClient {
         debug.oddsError = eventErrors.join(" | ")
       }
 
-      const liveEventIds = new Set<string>()
       const seen         = new Set<string>()
       const allSdkEvents: SdkEvent[] = []
       for (const batch of eventBatches) {
@@ -211,16 +219,15 @@ export class OddsApiClient {
           if (seen.has(ev.id)) continue
           seen.add(ev.id)
           allSdkEvents.push(ev)
-          if (ev.status === "live") liveEventIds.add(ev.id)
         }
       }
 
       debug.eventsFound = allSdkEvents.length
 
       const todayEvents = allSdkEvents.slice(0, MAX_EVENTS)
-      if (todayEvents.length === 0) return { events: [], quota: 5000, liveEventIds, debug }
+      if (todayEvents.length === 0) return { events: [], quota: 5000, liveEventIds: new Set(), debug }
 
-      // ── Step 3: batch odds — surface errors ────────────────────────────────
+      // ── Step 3: fetch odds ─────────────────────────────────────────────────
       const eventIds = todayEvents.map((e) => e.id).join(",")
       let oddsArr: EventOdds[] = []
       try {
@@ -232,35 +239,26 @@ export class OddsApiClient {
 
       debug.oddsEntries = oddsArr.length
 
-      // SDK type says eventId but actual API field may be id, event_id, etc.
-      const oddsById = new Map<string, EventOdds>()
-      for (const o of oddsArr) {
-        const raw = o as unknown as Record<string, unknown>
-        const id = o.eventId ?? raw.id ?? raw.event_id ?? raw.eventID
-        if (id != null) oddsById.set(String(id), o)
-      }
-
-      // ── Step 4: map to OddsApiEvent ────────────────────────────────────────
-      let idMatchCount = 0
+      // ── Step 4: map odds entries directly ──────────────────────────────────
+      // Actual response shape: {id, home, away, date, status, sport, league, urls, bookmakers}
+      // where bookmakers is Record<string, Array<{name, odds}>>
+      const liveEventIds = new Set<string>()
       const events: OddsApiEvent[] = []
-      for (const sdkEv of todayEvents) {
-        const oddsEntry = oddsById.get(String(sdkEv.id))
-        if (oddsEntry) idMatchCount++
-        const mapped = mapSdkEventToOddsApi(sdkEv, oddsEntry)
-        if (mapped) events.push(mapped)
+      for (const o of oddsArr) {
+        const raw    = o as unknown as Record<string, unknown>
+        const result = mapOddsEntryToEvent(raw)
+        if (!result) continue
+        events.push(result.event)
+        if (result.isLive) liveEventIds.add(result.event.id)
       }
 
-      if (idMatchCount === 0 && oddsArr.length > 0) {
+      if (events.length === 0 && oddsArr.length > 0) {
         const raw = oddsArr[0] as unknown as Record<string, unknown>
-        debug.oddsError = `ID mismatch. Event[0]=${String(todayEvents[0]?.id)} | OddsEntry fields: ${Object.keys(raw).join(",")}`
-      } else if (events.length === 0 && idMatchCount > 0) {
-        // IDs match but mapping fails — show first matched entry structure
-        const matched = [...oddsById.values()][0] as unknown as Record<string, unknown>
-        const markets = matched.markets ?? matched.odds ?? matched.data
-        const firstMarket = Array.isArray(markets) && markets.length > 0
-          ? JSON.stringify(markets[0]).slice(0, 200)
-          : `no markets (keys: ${Object.keys(matched).join(",")})`
-        debug.oddsError = `Mapping failed. First market: ${firstMarket}`
+        const bks = raw.bookmakers
+        const bksInfo = bks && typeof bks === "object" && !Array.isArray(bks)
+          ? `keys=${Object.keys(bks as object).slice(0, 3).join(",")}`
+          : `type=${typeof bks} isArray=${Array.isArray(bks)}`
+        debug.oddsError = `Mapping failed. Entry keys: ${Object.keys(raw).join(",")} | bookmakers: ${bksInfo}`
       }
 
       debug.mappedEvents = events.length
