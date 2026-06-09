@@ -18,6 +18,7 @@ export interface OddsDebug {
   oddsEntries:     number
   oddsError:       string | null
   mappedEvents:    number
+  liveDebug:       string
 }
 
 function decimalToAmerican(n: number): number {
@@ -188,7 +189,7 @@ export class OddsApiClient {
   async getOdds(): Promise<{ events: OddsApiEvent[]; quota: number; liveEventIds: Set<string>; debug: OddsDebug }> {
     const debug: OddsDebug = {
       sportsFound: 0, sportIds: [], allBooks: 0, selectedBooks: 0,
-      firstBookmaker: "", bookmakerStr: "", eventsFound: 0, oddsEntries: 0, oddsError: null, mappedEvents: 0,
+      firstBookmaker: "", bookmakerStr: "", eventsFound: 0, oddsEntries: 0, oddsError: null, mappedEvents: 0, liveDebug: "",
     }
 
     try {
@@ -269,8 +270,11 @@ export class OddsApiClient {
         ({ events, liveEventIds } = convertBets(betsByEvent, false))
       }
 
-      // ── Step 5: fetch live games (value bets are pre-match only) ─────────────
-      // getLiveEvents + getEventOdds to get currently in-progress games
+      // ── Step 5: detect live games ────────────────────────────────────────────
+      // Approach A: getLiveEvents + getEventOdds (explicit live feed)
+      // Approach B: recently-started games from value bets (start < now < start+4h)
+      const liveDbg: string[] = []
+
       if (liveEventIds.size === 0) {
         const LIVE_SPORTS = ["ice-hockey", "basketball", "baseball", "american-football", "football"]
         liveFetch:
@@ -279,10 +283,16 @@ export class OddsApiClient {
           try {
             await new Promise((r) => setTimeout(r, 350))
             liveEvs = asArray<RawBet>(await this.sdk.getLiveEvents(sport) as unknown)
-          } catch { continue }
+            liveDbg.push(`${sport}:${liveEvs.length}ev`)
+          } catch (e: unknown) {
+            liveDbg.push(`${sport}:ERR(${(e as Error).message.slice(0, 30)})`)
+            continue
+          }
+
+          if (!liveEvs.length) continue
 
           for (const lev of liveEvs.slice(0, 3)) {
-            const lid = String(lev.id ?? "")
+            const lid      = String(lev.id ?? "")
             if (!lid) continue
             const homeP    = lev.homeParticipant as RawBet | undefined
             const awayP    = lev.awayParticipant as RawBet | undefined
@@ -292,59 +302,94 @@ export class OddsApiClient {
 
             try {
               await new Promise((r) => setTimeout(r, 200))
-              const odRaw = await this.sdk.getEventOdds({ eventId: lid, bookmakers: selBookIds.join(",") }) as unknown as RawBet
+              const odRaw  = await this.sdk.getEventOdds({ eventId: lid, bookmakers: selBookIds.join(",") }) as unknown as RawBet
+              const odKeys = Object.keys(odRaw).join(",")
+              liveDbg.push(`od[${lid.slice(-5)}]:{${odKeys}}`)
 
-              // EventOdds: {markets: [{market: string, outcomes: [{name, odds, bookmaker}]}]}
-              const mktArr  = asArray<RawBet>(odRaw.markets ?? [])
-              if (!mktArr.length) continue
-
-              const ml = mktArr.find((m) => {
-                const mk = String(m.market ?? "").toLowerCase()
-                return ["ml", "moneyline", "h2h", "1x2", "match winner", "match result"].includes(mk)
-              }) ?? mktArr[0]
-
-              const outcomes = asArray<RawBet>(ml?.outcomes ?? [])
-              if (outcomes.length < 2) continue
-
-              const bkMap = new Map<string, { home?: number; away?: number }>()
-              for (const o of outcomes) {
-                const bk  = String(o.bookmaker ?? "")
-                const nm  = String(o.name ?? "").toLowerCase()
-                const dec = Number(o.odds ?? 0)
-                if (!bk || dec <= 1) continue
-                if (!bkMap.has(bk)) bkMap.set(bk, {})
-                const entry = bkMap.get(bk)!
-                if      (nm === homeName.toLowerCase() || nm === "home" || nm === "1") entry.home = dec
-                else if (nm === awayName.toLowerCase() || nm === "away" || nm === "2") entry.away = dec
-                else if (entry.home === undefined) entry.home = dec
-                else if (entry.away === undefined) entry.away = dec
-              }
+              // Format 1 — EventOdds: { markets: [{market, outcomes:[{name,odds,bookmaker}]}] }
+              const mktArr   = asArray<RawBet>(odRaw.markets ?? [])
+              // Format 2 — HistoricalEventOdds: { bookmakers: {"Bet365": [{name,odds:[{home,away}]}]} }
+              const bkObjRaw = (!mktArr.length && odRaw.bookmakers && !Array.isArray(odRaw.bookmakers))
+                ? (odRaw.bookmakers as Record<string, unknown>)
+                : null
 
               const liveBooks: Bookmaker[] = []
-              for (const [bkName, bkOdds] of bkMap) {
-                if (bkOdds.home === undefined || bkOdds.away === undefined) continue
-                const lu = new Date().toISOString()
-                liveBooks.push({
-                  key:     bkName.toLowerCase().replace(/[^a-z0-9]/g, "_"),
-                  title:   bkName,
-                  last_update: lu,
-                  markets: [{ key: "h2h", last_update: lu, outcomes: [
-                    { name: homeName, price: decimalToAmerican(bkOdds.home) },
-                    { name: awayName, price: decimalToAmerican(bkOdds.away) },
-                  ]}],
-                })
-              }
-              if (!liveBooks.length) continue
 
-              const sportVal  = lev.sport  as RawBet | string | undefined
-              const leagueVal = lev.league as RawBet | string | undefined
-              const sportStr2  = typeof sportVal  === "object" ? String((sportVal  as RawBet)?.name ?? sport)  : String(sportVal  ?? sport)
-              const leagueStr2 = typeof leagueVal === "object" ? String((leagueVal as RawBet)?.name ?? "")      : String(leagueVal ?? lev.leagueId ?? "")
-              const sportKey2  = `${sportStr2}_${leagueStr2}`.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "")
+              if (mktArr.length > 0) {
+                const ml = mktArr.find((m) => {
+                  const mk = String(m.market ?? "").toLowerCase()
+                  return ["ml","moneyline","h2h","1x2","match winner","match result","2-way","2way"].includes(mk)
+                }) ?? mktArr[0]
+                liveDbg.push(`mlMkt:${String(ml?.market ?? "?")}`)
+
+                const outcomes = asArray<RawBet>(ml?.outcomes ?? [])
+                liveDbg.push(`oc:${outcomes.length}`)
+
+                const bkMap = new Map<string, { home?: number; away?: number }>()
+                for (const o of outcomes) {
+                  const bk  = String(o.bookmaker ?? "")
+                  const nm  = String(o.name ?? "").toLowerCase()
+                  const dec = Number(o.odds ?? 0)
+                  if (!bk || dec <= 1) continue
+                  if (!bkMap.has(bk)) bkMap.set(bk, {})
+                  const entry = bkMap.get(bk)!
+                  if      (nm === homeName.toLowerCase() || nm === "home" || nm === "1") entry.home = dec
+                  else if (nm === awayName.toLowerCase() || nm === "away" || nm === "2") entry.away = dec
+                  else if (entry.home === undefined) entry.home = dec
+                  else if (entry.away === undefined) entry.away = dec
+                }
+                for (const [bkName, bkOdds] of bkMap) {
+                  if (bkOdds.home === undefined || bkOdds.away === undefined) continue
+                  const lu = new Date().toISOString()
+                  liveBooks.push({
+                    key: bkName.toLowerCase().replace(/[^a-z0-9]/g, "_"),
+                    title: bkName,
+                    last_update: lu,
+                    markets: [{ key: "h2h", last_update: lu, outcomes: [
+                      { name: homeName, price: decimalToAmerican(bkOdds.home) },
+                      { name: awayName, price: decimalToAmerican(bkOdds.away) },
+                    ]}],
+                  })
+                }
+
+              } else if (bkObjRaw) {
+                // HistoricalEventOdds format
+                for (const [bkName, bkMkts] of Object.entries(bkObjRaw)) {
+                  const mkArr = Array.isArray(bkMkts) ? (bkMkts as RawBet[]) : []
+                  for (const mkt of mkArr) {
+                    const mktName = String(mkt.name ?? "").toLowerCase()
+                    if (!["ml","moneyline","h2h","2way","1x2","match winner","match result","fulltime result"].includes(mktName)) continue
+                    const oddsArr = asArray<RawBet>(mkt.odds ?? [])
+                    const ex = oddsArr.length ? extractOdds(oddsArr[0]) : extractOdds(mkt)
+                    if (!ex) continue
+                    const lu = new Date().toISOString()
+                    liveBooks.push({
+                      key: bkName.toLowerCase().replace(/[^a-z0-9]/g, "_"),
+                      title: bkName,
+                      last_update: lu,
+                      markets: [{ key: "h2h", last_update: lu, outcomes: [
+                        { name: homeName, price: decimalToAmerican(ex.home) },
+                        { name: awayName, price: decimalToAmerican(ex.away) },
+                      ]}],
+                    })
+                    break
+                  }
+                }
+              }
+
+              if (!liveBooks.length) {
+                liveDbg.push(`${lid.slice(-5)}:no_books`)
+                continue
+              }
+
+              const sportVal   = lev.sport  as RawBet | string | undefined
+              const leagueVal  = lev.league as RawBet | string | undefined
+              const sportStr2  = typeof sportVal  === "object" ? String((sportVal  as RawBet)?.name ?? sport) : String(sportVal  ?? sport)
+              const leagueStr2 = typeof leagueVal === "object" ? String((leagueVal as RawBet)?.name ?? "")    : String(leagueVal ?? lev.leagueId ?? "")
 
               events.push({
                 id:            lid,
-                sport_key:     sportKey2,
+                sport_key:     `${sportStr2}_${leagueStr2}`.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, ""),
                 sport_title:   leagueStr2 ? `${sportStr2} — ${leagueStr2}` : sportStr2,
                 commence_time: String(lev.startTime ?? lev.date ?? new Date().toISOString()),
                 home_team:     homeName,
@@ -352,11 +397,34 @@ export class OddsApiClient {
                 bookmakers:    liveBooks,
               })
               liveEventIds.add(lid)
-              break liveFetch  // one live event is enough
-            } catch { continue }
+              liveDbg.push(`A:added ${lid.slice(-5)}`)
+              break liveFetch
+            } catch (e: unknown) {
+              liveDbg.push(`${lid.slice(-5)}:odERR(${(e as Error).message.slice(0, 40)})`)
+              continue
+            }
           }
         }
       }
+
+      // Approach B: mark recently-started events (started < now, within last 4 h) as live
+      // These will already be in events[] from value bets; just add to liveEventIds.
+      if (liveEventIds.size === 0) {
+        liveDbg.push("tryB")
+        const now   = Date.now()
+        const floor = now - 4 * 60 * 60 * 1000
+        for (const ev of events) {
+          const t = new Date(ev.commence_time).getTime()
+          if (!isNaN(t) && t < now && t > floor) {
+            liveEventIds.add(ev.id)
+            liveDbg.push(`B:${ev.id.slice(-5)} started ${new Date(t).toISOString().slice(11, 16)}UTC`)
+            break
+          }
+        }
+        if (liveEventIds.size === 0) liveDbg.push("B:none")
+      }
+
+      debug.liveDebug = liveDbg.join("; ")
 
       debug.mappedEvents = events.length
 
