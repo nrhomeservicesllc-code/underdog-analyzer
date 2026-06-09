@@ -39,7 +39,7 @@ function decimalToAmerican(n: number): number {
 // }
 type RawBet = Record<string, unknown>
 
-// Markets where home/away odds represent TEAM win probability (not spread or totals)
+// Markets where home/away odds represent TEAM win probability
 const MONEYLINE_NAMES = new Set([
   "ml", "moneyline", "money line", "1x2", "match winner", "match result",
   "fulltime result", "ft result", "h2h", "2-way", "win",
@@ -51,7 +51,37 @@ function isMoneyline(marketName: string): boolean {
 }
 function isTotal(marketName: string): boolean {
   const n = marketName.toLowerCase().trim()
-  return TOTAL_NAMES.has(n) || n.startsWith("total ") || n.startsWith("over ")
+  return TOTAL_NAMES.has(n) || n.startsWith("total ") || n.startsWith("over ") || n.includes("totals")
+}
+
+// Try multiple field name conventions used across sports/bookmakers:
+//   home/away (Spread), 1/2 (European ML), or any two decimal numbers in range
+function extractOdds(obj: RawBet): { home: number; away: number } | null {
+  const candidates = [
+    [obj.home, obj.away],
+    [obj["1"],  obj["2"]],
+  ]
+  for (const [h, a] of candidates) {
+    const hN = parseFloat(String(h ?? ""))
+    const aN = parseFloat(String(a ?? ""))
+    if (hN > 1 && aN > 1) return { home: hN, away: aN }
+  }
+  // Last resort: first two numbers in 1.01–50 range (skip href, hdp, max)
+  const SKIP = new Set(["href", "hdp", "max"])
+  const nums: number[] = []
+  for (const [k, v] of Object.entries(obj)) {
+    if (SKIP.has(k)) continue
+    const n = parseFloat(String(v ?? ""))
+    if (n > 1.01 && n < 50) { nums.push(n); if (nums.length === 2) break }
+  }
+  return nums.length === 2 ? { home: nums[0], away: nums[1] } : null
+}
+
+function isSpread(market: RawBet): boolean {
+  const hdpRaw = market.hdp
+  if (hdpRaw === undefined || hdpRaw === null) return false
+  const n = Number(hdpRaw)
+  return !isNaN(n) && n !== 0
 }
 
 function convertBets(
@@ -85,23 +115,15 @@ function convertBets(
       if (!market) continue
 
       const marketName = String(market.name ?? "")
+      if (isTotal(marketName)) continue
+      if (isSpread(market)) continue                          // skip spread/handicap
 
-      // Filter logic
-      if (isTotal(marketName)) continue              // always skip totals
-      const hdp = Number(market.hdp ?? 0)
-      if (moneylineOnly) {
-        if (!isMoneyline(marketName)) continue       // strict: named moneyline only
-        if (hdp !== 0) continue                      // no non-zero handicaps
-      } else {
-        if (hdp !== 0) continue                      // still skip spread/AH markets
-      }
+      if (moneylineOnly && !isMoneyline(marketName)) continue // strict mode
 
+      // Try bookmakerOdds first, fall back to market consensus odds
       const bkOdds = vb.bookmakerOdds as RawBet | undefined
-      if (!bkOdds) continue
-
-      const homeDecimal = parseFloat(String(bkOdds.home ?? "0"))
-      const awayDecimal = parseFloat(String(bkOdds.away ?? "0"))
-      if (!homeDecimal || !awayDecimal || homeDecimal <= 1 || awayDecimal <= 1) continue
+      const odds   = (bkOdds ? extractOdds(bkOdds) : null) ?? extractOdds(market)
+      if (!odds) continue
 
       const bkName = String(vb.bookmaker ?? "Unknown")
       const lu     = new Date().toISOString()
@@ -114,8 +136,8 @@ function convertBets(
           key:         "h2h",
           last_update: lu,
           outcomes:    [
-            { name: homeName, price: decimalToAmerican(homeDecimal) },
-            { name: awayName, price: decimalToAmerican(awayDecimal) },
+            { name: homeName, price: decimalToAmerican(odds.home) },
+            { name: awayName, price: decimalToAmerican(odds.away) },
           ],
         }],
       })
@@ -253,8 +275,12 @@ export class OddsApiClient {
           const m = v.market as RawBet | undefined
           return String(m?.name ?? "?")
         }))].join(",")
+        // Show first ML entry structure for diagnosis
+        const firstML = allRawBets.find((v) => String((v.market as RawBet | undefined)?.name ?? "").toLowerCase() === "ml")
+        const { event: _ev, ...mlRest } = firstML ?? {}
+        const mlStr = firstML ? ` | First ML: ${JSON.stringify(mlRest).slice(0, 220)}` : ""
         debug.oddsError = (debug.oddsError ? debug.oddsError + " | " : "") +
-          `Still 0 mapped. Market names in data: [${names}]`
+          `Still 0 mapped. Markets: [${names}]${mlStr}`
       }
 
       return { events, quota: 5000, liveEventIds, debug }
