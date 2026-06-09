@@ -184,14 +184,24 @@ export function BettingDashboard() {
   // Resolve both picks whenever analyses update
   useEffect(() => {
     if (!data) return
-    const liveGames = data.allAnalyses.filter((a) => a.isLive)
-    const upcoming  = data.allAnalyses.filter((a) => !a.isLive)
+    const liveGames   = data.allAnalyses.filter((a) => a.isLive)
+    const upcomingAll = data.allAnalyses.filter((a) => !a.isLive)
 
-    const lp = resolvePick(liveGames, savedLiveId, LIVE_PICK_KEY)
+    // LIVE slot: a real in-progress game when one exists; otherwise the
+    // soonest-starting upcoming game, so the slot is never empty.
+    const liveCandidates = liveGames.length
+      ? liveGames
+      : [...upcomingAll].sort(
+          (a, b) => new Date(a.commenceTime).getTime() - new Date(b.commenceTime).getTime()
+        )
+
+    const lp = resolvePick(liveCandidates, savedLiveId, LIVE_PICK_KEY)
     setLivePick(lp)
     if (lp && lp.eventId !== savedLiveId) setSavedLiveId(lp.eventId)
 
-    const up = resolvePick(upcoming, savedUpcomingId, UPCOMING_PICK_KEY)
+    // COMING UP slot: best upcoming by score, never duplicating the live slot.
+    const upcomingForSlot = upcomingAll.filter((a) => a.eventId !== lp?.eventId)
+    const up = resolvePick(upcomingForSlot, savedUpcomingId, UPCOMING_PICK_KEY)
     setUpcomingPick(up)
     if (up && up.eventId !== savedUpcomingId) setSavedUpcomingId(up.eventId)
   }, [data, savedLiveId, savedUpcomingId])
@@ -319,22 +329,24 @@ export function BettingDashboard() {
       {tab === "pick" && (
         <main className="max-w-md mx-auto px-4 py-6 space-y-6">
 
-          {/* Live pick */}
+          {/* Live pick (or soonest-starting fallback) */}
           <section className="space-y-2">
             <div className="flex items-center gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-              <span className="text-[11px] text-zinc-500 font-bold uppercase tracking-widest">Live Now</span>
+              <span className={`w-1.5 h-1.5 rounded-full ${livePick?.isLive ? "bg-red-500 animate-pulse" : "bg-emerald-500"}`} />
+              <span className="text-[11px] text-zinc-500 font-bold uppercase tracking-widest">
+                {livePick?.isLive ? "Live Now" : "Top Pick — Starting Soonest"}
+              </span>
             </div>
             {livePick ? (
               <ThePickCard
                 pick={livePick}
-                label="🔴 Live Underdog"
+                label={livePick.isLive ? "🔴 Live Underdog" : "▶ Next To Start"}
                 tracked={isTracked(livePick.eventId, trackedBets)}
                 onTrack={() => handleTrack(livePick)}
               />
             ) : (
               <div className="bg-zinc-950 border border-zinc-900 rounded-xl px-4 py-6 text-center">
-                <p className="text-zinc-600 text-sm">No live games right now</p>
+                <p className="text-zinc-600 text-sm">No games available right now</p>
               </div>
             )}
           </section>
