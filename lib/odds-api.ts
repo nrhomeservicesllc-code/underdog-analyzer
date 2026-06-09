@@ -270,22 +270,37 @@ export class OddsApiClient {
         ({ events, liveEventIds } = convertBets(betsByEvent, false))
       }
 
-      // ── Step 5: detect live games ────────────────────────────────────────────
-      // Approach A: getLiveEvents + getEventOdds (explicit live feed)
-      // Approach B: recently-started games from value bets (start < now < start+4h)
+      // ── Step 5: detect genuinely live (in-progress) games ────────────────────
+      // Use getLiveEvents with REAL sport slugs derived from the value-bet data
+      // (guessed slugs silently return nothing), then getEventOdds for in-play odds.
       const liveDbg: string[] = []
 
+      // Derive real sport slugs from the value bets we already fetched
+      const sportSlugs = new Set<string>()
+      for (const vb of allRawBets) {
+        const ev = vb.event as RawBet | undefined
+        const sp = ev?.sport as RawBet | string | undefined
+        const slug = typeof sp === "object" ? String((sp as RawBet)?.slug ?? "") : ""
+        if (slug) sportSlugs.add(slug)
+      }
+      for (const s of ["basketball", "baseball", "ice-hockey", "american-football", "football", "tennis", "mma"]) {
+        sportSlugs.add(s)
+      }
+      liveDbg.push(`slugs:[${[...sportSlugs].slice(0, 8).join(",")}]`)
+
+      // Wider book list to retry live odds if our selected books carry no in-play odds
+      const wideBookIds = allBooks.map(toBookId).filter(Boolean).slice(0, 25)
+
       if (liveEventIds.size === 0) {
-        const LIVE_SPORTS = ["ice-hockey", "basketball", "baseball", "american-football", "football"]
         liveFetch:
-        for (const sport of LIVE_SPORTS) {
+        for (const sport of sportSlugs) {
           let liveEvs: RawBet[] = []
           try {
-            await new Promise((r) => setTimeout(r, 350))
+            await new Promise((r) => setTimeout(r, 300))
             liveEvs = asArray<RawBet>(await this.sdk.getLiveEvents(sport) as unknown)
-            liveDbg.push(`${sport}:${liveEvs.length}ev`)
+            if (liveEvs.length) liveDbg.push(`${sport}:${liveEvs.length}ev`)
           } catch (e: unknown) {
-            liveDbg.push(`${sport}:ERR(${(e as Error).message.slice(0, 30)})`)
+            liveDbg.push(`${sport}:ERR(${(e as Error).message.slice(0, 20)})`)
             continue
           }
 
@@ -300,31 +315,23 @@ export class OddsApiClient {
             const awayName = String(awayP?.name ?? lev.away ?? "")
             if (!homeName || !awayName) continue
 
-            try {
-              await new Promise((r) => setTimeout(r, 200))
-              const odRaw  = await this.sdk.getEventOdds({ eventId: lid, bookmakers: selBookIds.join(",") }) as unknown as RawBet
-              const odKeys = Object.keys(odRaw).join(",")
-              liveDbg.push(`od[${lid.slice(-5)}]:{${odKeys}}`)
-
+            // Parse in-play odds from either response shape into Bookmaker[]
+            const parseLiveBooks = (odRaw: RawBet): Bookmaker[] => {
+              const result: Bookmaker[] = []
               // Format 1 — EventOdds: { markets: [{market, outcomes:[{name,odds,bookmaker}]}] }
               const mktArr   = asArray<RawBet>(odRaw.markets ?? [])
-              // Format 2 — HistoricalEventOdds: { bookmakers: {"Bet365": [{name,odds:[{home,away}]}]} }
+              // Format 2 — HistoricalEventOdds: { bookmakers: {"Bet365": [{name,odds:[...]}]} }
               const bkObjRaw = (!mktArr.length && odRaw.bookmakers && !Array.isArray(odRaw.bookmakers))
                 ? (odRaw.bookmakers as Record<string, unknown>)
                 : null
-
-              const liveBooks: Bookmaker[] = []
 
               if (mktArr.length > 0) {
                 const ml = mktArr.find((m) => {
                   const mk = String(m.market ?? "").toLowerCase()
                   return ["ml","moneyline","h2h","1x2","match winner","match result","2-way","2way"].includes(mk)
                 }) ?? mktArr[0]
-                liveDbg.push(`mlMkt:${String(ml?.market ?? "?")}`)
 
                 const outcomes = asArray<RawBet>(ml?.outcomes ?? [])
-                liveDbg.push(`oc:${outcomes.length}`)
-
                 const bkMap = new Map<string, { home?: number; away?: number }>()
                 for (const o of outcomes) {
                   const bk  = String(o.bookmaker ?? "")
@@ -341,19 +348,15 @@ export class OddsApiClient {
                 for (const [bkName, bkOdds] of bkMap) {
                   if (bkOdds.home === undefined || bkOdds.away === undefined) continue
                   const lu = new Date().toISOString()
-                  liveBooks.push({
-                    key: bkName.toLowerCase().replace(/[^a-z0-9]/g, "_"),
-                    title: bkName,
-                    last_update: lu,
+                  result.push({
+                    key: bkName.toLowerCase().replace(/[^a-z0-9]/g, "_"), title: bkName, last_update: lu,
                     markets: [{ key: "h2h", last_update: lu, outcomes: [
                       { name: homeName, price: decimalToAmerican(bkOdds.home) },
                       { name: awayName, price: decimalToAmerican(bkOdds.away) },
                     ]}],
                   })
                 }
-
               } else if (bkObjRaw) {
-                // HistoricalEventOdds format
                 for (const [bkName, bkMkts] of Object.entries(bkObjRaw)) {
                   const mkArr = Array.isArray(bkMkts) ? (bkMkts as RawBet[]) : []
                   for (const mkt of mkArr) {
@@ -363,10 +366,8 @@ export class OddsApiClient {
                     const ex = oddsArr.length ? extractOdds(oddsArr[0]) : extractOdds(mkt)
                     if (!ex) continue
                     const lu = new Date().toISOString()
-                    liveBooks.push({
-                      key: bkName.toLowerCase().replace(/[^a-z0-9]/g, "_"),
-                      title: bkName,
-                      last_update: lu,
+                    result.push({
+                      key: bkName.toLowerCase().replace(/[^a-z0-9]/g, "_"), title: bkName, last_update: lu,
                       markets: [{ key: "h2h", last_update: lu, outcomes: [
                         { name: homeName, price: decimalToAmerican(ex.home) },
                         { name: awayName, price: decimalToAmerican(ex.away) },
@@ -375,6 +376,22 @@ export class OddsApiClient {
                     break
                   }
                 }
+              }
+              return result
+            }
+
+            try {
+              await new Promise((r) => setTimeout(r, 200))
+              let odRaw = await this.sdk.getEventOdds({ eventId: lid, bookmakers: selBookIds.join(",") }) as unknown as RawBet
+              liveDbg.push(`od[${lid.slice(-5)}]:{${Object.keys(odRaw).join(",")}}`)
+              let liveBooks = parseLiveBooks(odRaw)
+
+              // Retry with a wider book list if our selected books carry no in-play odds
+              if (!liveBooks.length && wideBookIds.length) {
+                await new Promise((r) => setTimeout(r, 200))
+                odRaw = await this.sdk.getEventOdds({ eventId: lid, bookmakers: wideBookIds.join(",") }) as unknown as RawBet
+                liveBooks = parseLiveBooks(odRaw)
+                liveDbg.push(`wide:${liveBooks.length}bk`)
               }
 
               if (!liveBooks.length) {
@@ -397,7 +414,7 @@ export class OddsApiClient {
                 bookmakers:    liveBooks,
               })
               liveEventIds.add(lid)
-              liveDbg.push(`A:added ${lid.slice(-5)}`)
+              liveDbg.push(`added ${lid.slice(-5)}`)
               break liveFetch
             } catch (e: unknown) {
               liveDbg.push(`${lid.slice(-5)}:odERR(${(e as Error).message.slice(0, 40)})`)
@@ -405,23 +422,6 @@ export class OddsApiClient {
             }
           }
         }
-      }
-
-      // Approach B: mark recently-started events (started < now, within last 4 h) as live
-      // These will already be in events[] from value bets; just add to liveEventIds.
-      if (liveEventIds.size === 0) {
-        liveDbg.push("tryB")
-        const now   = Date.now()
-        const floor = now - 4 * 60 * 60 * 1000
-        for (const ev of events) {
-          const t = new Date(ev.commence_time).getTime()
-          if (!isNaN(t) && t < now && t > floor) {
-            liveEventIds.add(ev.id)
-            liveDbg.push(`B:${ev.id.slice(-5)} started ${new Date(t).toISOString().slice(11, 16)}UTC`)
-            break
-          }
-        }
-        if (liveEventIds.size === 0) liveDbg.push("B:none")
       }
 
       debug.liveDebug = liveDbg.join("; ")
