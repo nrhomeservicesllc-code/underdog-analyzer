@@ -215,8 +215,9 @@ export class OddsApiClient {
       debug.mappedEvents = events.length
 
       if (events.length === 0 && allValueBets.length > 0) {
-        const sample = allValueBets[0]
-        debug.oddsError = `valueBets found but none mapped. Sample: market=${sample.market} outcome=${sample.outcome} odds=${sample.odds} hasEvent=${!!sample.event}`
+        const raw = allValueBets[0] as unknown as Record<string, unknown>
+        const { event: _ev, ...rest } = raw
+        debug.oddsError = `Full structure (no event): ${JSON.stringify(rest).slice(0, 350)}`
       }
 
       return { events, quota: 5000, liveEventIds, debug }
