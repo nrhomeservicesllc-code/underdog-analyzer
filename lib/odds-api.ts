@@ -101,10 +101,11 @@ function convertBets(
     const status = String(ev.status ?? "")
     if (status === "finished") continue
 
+    // Event may use homeParticipant.name (Event type) or plain home/away strings (DroppingOddsEntry type)
     const homeP    = ev.homeParticipant as RawBet | undefined
     const awayP    = ev.awayParticipant as RawBet | undefined
-    const homeName = String(homeP?.name ?? "")
-    const awayName = String(awayP?.name ?? "")
+    const homeName = String(homeP?.name ?? ev.home ?? ev.homeTeam ?? "")
+    const awayName = String(awayP?.name ?? ev.away ?? ev.awayTeam ?? "")
     if (!homeName || !awayName) continue
 
     const isLive = status === "live"
@@ -146,17 +147,17 @@ function convertBets(
     if (!books.length) continue
     if (isLive) liveEventIds.add(eventId)
 
-    const sport  = ev.sport  as RawBet | string | undefined
-    const league = ev.league as RawBet | string | undefined
-    const sportStr  = typeof sport  === "object" ? String((sport  as RawBet)?.name ?? "Sports") : String(sport  ?? "Sports")
-    const leagueStr = typeof league === "object" ? String((league as RawBet)?.name ?? "")       : String(league ?? "")
+    const sportRaw  = ev.sport  as RawBet | string | undefined
+    const leagueRaw = ev.league as RawBet | string | undefined
+    const sportStr  = typeof sportRaw  === "object" ? String((sportRaw  as RawBet)?.name ?? (sportRaw  as RawBet)?.slug ?? "Sports") : String(sportRaw  ?? "Sports")
+    const leagueStr = typeof leagueRaw === "object" ? String((leagueRaw as RawBet)?.name ?? (leagueRaw as RawBet)?.slug ?? "")       : String(leagueRaw ?? "")
     const sportKey  = `${sportStr}_${leagueStr}`.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "")
 
     events.push({
       id:            eventId,
       sport_key:     sportKey,
       sport_title:   leagueStr ? `${sportStr} — ${leagueStr}` : sportStr,
-      commence_time: String(ev.startTime ?? new Date().toISOString()),
+      commence_time: String(ev.startTime ?? ev.date ?? new Date().toISOString()),
       home_team:     homeName,
       away_team:     awayName,
       bookmakers:    books,
