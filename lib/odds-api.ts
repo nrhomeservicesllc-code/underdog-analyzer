@@ -117,7 +117,7 @@ function valueBetsToEvents(
 function asArray<T>(val: unknown): T[] {
   if (Array.isArray(val)) return val as T[]
   if (val && typeof val === "object") {
-    for (const key of ["data", "results", "items", "selected", "bets", "valueBets"]) {
+    for (const key of ["data", "bookmakers", "results", "items", "selected", "bets", "valueBets"]) {
       const v = (val as Record<string, unknown>)[key]
       if (Array.isArray(v)) return v as T[]
     }
