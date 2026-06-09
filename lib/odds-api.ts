@@ -46,12 +46,13 @@ function valueBetsToEvents(
     const withEvent = vbs.find((v) => v.event)
     if (!withEvent?.event) continue
 
-    const ev     = withEvent.event
+    const ev = withEvent.event
     if (ev.status === "finished") continue
 
-    const homeName = ev.homeParticipant.name
-    const awayName = ev.awayParticipant.name
-    const isLive   = ev.status === "live"
+    const homeName = ev.homeParticipant?.name ?? "Home"
+    const awayName = ev.awayParticipant?.name ?? "Away"
+    if (homeName === "Home" && awayName === "Away") continue  // no real team names
+    const isLive = ev.status === "live"
 
     const books: Bookmaker[] = []
 
