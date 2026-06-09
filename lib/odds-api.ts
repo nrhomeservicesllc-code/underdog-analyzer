@@ -1,6 +1,5 @@
 import { OddsAPIClient as SdkClient, InvalidAPIKeyError, RateLimitExceededError } from "odds-api-io"
-import type { ValueBet } from "odds-api-io"
-import type { OddsApiEvent, Bookmaker, Outcome } from "@/types/betting"
+import type { OddsApiEvent, Bookmaker } from "@/types/betting"
 
 export interface LiveScore {
   homeScore: string
@@ -27,85 +26,115 @@ function decimalToAmerican(n: number): number {
   return Math.round(-100 / (n - 1))
 }
 
-const MONEYLINE_KEYS = new Set([
-  "ml", "moneyline", "h2h", "1x2",
-  "match winner", "match result", "fulltime result", "ft result", "1",
-])
+// Actual API response per value bet (SDK types are incorrect):
+// {
+//   id:              string  — composite "{eventId}-{market}-{betSide}-{bookmaker}-{line}"
+//   eventId:         string  — numeric event ID
+//   betSide:         "home"|"away"
+//   expectedValue:   number
+//   market:          { name: string, hdp?: number, home: string, away: string, max?: number }
+//   bookmaker:       string
+//   bookmakerOdds:   { home: string, away: string, hdp?: string, href: string }
+//   event?:          Event   (when includeEventDetails: true)
+// }
+type RawBet = Record<string, unknown>
 
-// Convert grouped ValueBets per event into OddsApiEvent objects.
-// For each value bet we know the actual bookmaker odds for the VALUE side.
-// We compute synthetic fair-value odds for the OTHER side so the analyzer
-// has both outcomes and can calculate EV correctly.
-function valueBetsToEvents(
-  betsByEvent: Map<string, ValueBet[]>
+// Markets where home/away odds represent TEAM win probability (not spread or totals)
+const MONEYLINE_NAMES = new Set([
+  "ml", "moneyline", "money line", "1x2", "match winner", "match result",
+  "fulltime result", "ft result", "h2h", "2-way", "win",
+])
+const TOTAL_NAMES = new Set(["total", "over/under", "o/u", "over", "under"])
+
+function isMoneyline(marketName: string): boolean {
+  return MONEYLINE_NAMES.has(marketName.toLowerCase().trim())
+}
+function isTotal(marketName: string): boolean {
+  const n = marketName.toLowerCase().trim()
+  return TOTAL_NAMES.has(n) || n.startsWith("total ") || n.startsWith("over ")
+}
+
+function convertBets(
+  betsByEvent: Map<string, RawBet[]>,
+  moneylineOnly: boolean
 ): { events: OddsApiEvent[]; liveEventIds: Set<string> } {
   const events: OddsApiEvent[] = []
   const liveEventIds = new Set<string>()
 
   for (const [eventId, vbs] of betsByEvent) {
-    const withEvent = vbs.find((v) => v.event)
-    if (!withEvent?.event) continue
+    if (!eventId || eventId === "undefined") continue
 
-    const ev = withEvent.event
-    if (ev.status === "finished") continue
+    const withEvent = vbs.find((v) => v.event != null)
+    if (!withEvent) continue
 
-    const homeName = ev.homeParticipant?.name ?? "Home"
-    const awayName = ev.awayParticipant?.name ?? "Away"
-    if (homeName === "Home" && awayName === "Away") continue  // no real team names
-    const isLive = ev.status === "live"
+    const ev     = withEvent.event as RawBet
+    const status = String(ev.status ?? "")
+    if (status === "finished") continue
 
+    const homeP    = ev.homeParticipant as RawBet | undefined
+    const awayP    = ev.awayParticipant as RawBet | undefined
+    const homeName = String(homeP?.name ?? "")
+    const awayName = String(awayP?.name ?? "")
+    if (!homeName || !awayName) continue
+
+    const isLive = status === "live"
     const books: Bookmaker[] = []
 
     for (const vb of vbs) {
-      // Only moneyline markets (no spreads/totals)
-      if (!MONEYLINE_KEYS.has(vb.market.toLowerCase())) continue
-      if (vb.fairOdds <= 1 || vb.odds <= 1) continue
+      const market = vb.market as RawBet | undefined
+      if (!market) continue
 
-      // Derive other-side fair odds from fairOdds (no-vig probability)
-      const fairProb      = 1 / vb.fairOdds
-      const otherFairProb = Math.max(0.01, 1 - fairProb)
-      const otherFairDec  = 1 / otherFairProb
+      const marketName = String(market.name ?? "")
 
-      // Match outcome to home/away
-      const outLow = vb.outcome.toLowerCase()
-      const isHome =
-        outLow === homeName.toLowerCase() ||
-        outLow === "home" ||
-        outLow === "1"
+      // Filter logic
+      if (isTotal(marketName)) continue              // always skip totals
+      const hdp = Number(market.hdp ?? 0)
+      if (moneylineOnly) {
+        if (!isMoneyline(marketName)) continue       // strict: named moneyline only
+        if (hdp !== 0) continue                      // no non-zero handicaps
+      } else {
+        if (hdp !== 0) continue                      // still skip spread/AH markets
+      }
 
-      const homeDecimal = isHome ? vb.odds : otherFairDec
-      const awayDecimal = isHome ? otherFairDec : vb.odds
+      const bkOdds = vb.bookmakerOdds as RawBet | undefined
+      if (!bkOdds) continue
 
-      if (homeDecimal <= 1 || awayDecimal <= 1) continue
+      const homeDecimal = parseFloat(String(bkOdds.home ?? "0"))
+      const awayDecimal = parseFloat(String(bkOdds.away ?? "0"))
+      if (!homeDecimal || !awayDecimal || homeDecimal <= 1 || awayDecimal <= 1) continue
 
-      const lu       = new Date().toISOString()
-      const outcomes: Outcome[] = [
-        { name: homeName, price: decimalToAmerican(homeDecimal) },
-        { name: awayName, price: decimalToAmerican(awayDecimal) },
-      ]
+      const bkName = String(vb.bookmaker ?? "Unknown")
+      const lu     = new Date().toISOString()
 
       books.push({
-        key:         vb.bookmaker.toLowerCase().replace(/[^a-z0-9]/g, "_"),
-        title:       vb.bookmaker,
+        key:         bkName.toLowerCase().replace(/[^a-z0-9]/g, "_"),
+        title:       bkName,
         last_update: lu,
-        markets:     [{ key: "h2h", last_update: lu, outcomes }],
+        markets:     [{
+          key:         "h2h",
+          last_update: lu,
+          outcomes:    [
+            { name: homeName, price: decimalToAmerican(homeDecimal) },
+            { name: awayName, price: decimalToAmerican(awayDecimal) },
+          ],
+        }],
       })
     }
 
     if (!books.length) continue
-
     if (isLive) liveEventIds.add(eventId)
 
-    const sportStr  = String(ev.sport  ?? "Sports")
-    const leagueStr = String(ev.league ?? "")
-    const sportKey  = `${sportStr}_${leagueStr}`
-      .toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "")
+    const sport  = ev.sport  as RawBet | string | undefined
+    const league = ev.league as RawBet | string | undefined
+    const sportStr  = typeof sport  === "object" ? String((sport  as RawBet)?.name ?? "Sports") : String(sport  ?? "Sports")
+    const leagueStr = typeof league === "object" ? String((league as RawBet)?.name ?? "")       : String(league ?? "")
+    const sportKey  = `${sportStr}_${leagueStr}`.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "")
 
     events.push({
       id:            eventId,
       sport_key:     sportKey,
       sport_title:   leagueStr ? `${sportStr} — ${leagueStr}` : sportStr,
-      commence_time: ev.startTime,
+      commence_time: String(ev.startTime ?? new Date().toISOString()),
       home_team:     homeName,
       away_team:     awayName,
       bookmakers:    books,
@@ -140,7 +169,7 @@ export class OddsApiClient {
     }
 
     try {
-      // ── Step 1: get selected bookmakers ──────────────────────────────────────
+      // ── Step 1: selected bookmakers ─────────────────────────────────────────
       const BASE = "https://api2.odds-api.io/v3"
       const [authBooksRaw, selBooksRes] = await Promise.allSettled([
         fetch(`${BASE}/bookmakers?apiKey=${this.key}`, {
@@ -149,7 +178,7 @@ export class OddsApiClient {
         this.sdk.getSelectedBookmakers(),
       ])
 
-      const allBooks = authBooksRaw.status === "fulfilled" ? asArray<Record<string, unknown>>(authBooksRaw.value) : []
+      const allBooks = authBooksRaw.status === "fulfilled" ? asArray<RawBet>(authBooksRaw.value) : []
       const selBooks = selBooksRes.status  === "fulfilled" ? asArray<unknown>(selBooksRes.value) : []
 
       debug.allBooks       = allBooks.length
@@ -158,7 +187,7 @@ export class OddsApiClient {
 
       const toBookId = (b: unknown): string => {
         if (typeof b === "string") return b
-        const raw = b as Record<string, unknown>
+        const raw = b as RawBet
         return String(raw.id ?? raw.slug ?? raw.key ?? raw.name ?? "")
       }
 
@@ -172,52 +201,60 @@ export class OddsApiClient {
       const selBookIds = selBooks.map(toBookId).filter(Boolean)
       debug.bookmakerStr = selBookIds.join(",").slice(0, 120)
 
-      // ── Step 2: fetch value bets for each selected bookmaker ─────────────────
-      // getValueBets takes a single bookmaker; call once per selected bookmaker.
-      const allValueBets: ValueBet[] = []
-      const betErrors: string[] = []
+      // ── Step 2: value bets per selected bookmaker ───────────────────────────
+      const allRawBets: RawBet[] = []
+      const betErrors: string[]  = []
 
       for (let i = 0; i < selBookIds.length; i++) {
         if (i > 0) await new Promise((r) => setTimeout(r, 350))
         try {
-          const raw = await this.sdk.getValueBets({ bookmaker: selBookIds[i], includeEventDetails: true })
-          const bets = asArray<ValueBet>(raw)
-          allValueBets.push(...bets)
+          const raw  = await this.sdk.getValueBets({ bookmaker: selBookIds[i], includeEventDetails: true })
+          const bets = asArray<RawBet>(raw)
+          allRawBets.push(...bets)
         } catch (e: unknown) {
           betErrors.push(`${selBookIds[i]}: ${(e as Error).message.slice(0, 60)}`)
         }
       }
 
-      debug.oddsEntries = allValueBets.length
+      debug.oddsEntries = allRawBets.length
+      if (betErrors.length) debug.oddsError = betErrors.join(" | ")
 
-      if (betErrors.length) {
-        debug.oddsError = betErrors.join(" | ")
-      }
-
-      if (allValueBets.length === 0) {
-        debug.oddsError = (debug.oddsError ?? "") +
-          (debug.oddsError ? " | " : "") +
-          `No value bets returned for bookmakers: ${selBookIds.join(",")}`
+      if (allRawBets.length === 0) {
+        debug.oddsError = (debug.oddsError ? debug.oddsError + " | " : "") +
+          `No value bets returned for: ${selBookIds.join(",")}`
         return { events: [], quota: 5000, liveEventIds: new Set(), debug }
       }
 
-      // ── Step 3: group by eventId ──────────────────────────────────────────────
-      const betsByEvent = new Map<string, ValueBet[]>()
-      for (const vb of allValueBets) {
-        if (!betsByEvent.has(vb.eventId)) betsByEvent.set(vb.eventId, [])
-        betsByEvent.get(vb.eventId)!.push(vb)
+      // ── Step 3: group by event ─────────────────────────────────────────────
+      // vb.eventId is the plain numeric event ID; fall back to parsing composite id
+      const betsByEvent = new Map<string, RawBet[]>()
+      for (const vb of allRawBets) {
+        const eid = String(vb.eventId ?? String(vb.id ?? "").split("-")[0] ?? "")
+        if (!eid) continue
+        if (!betsByEvent.has(eid)) betsByEvent.set(eid, [])
+        betsByEvent.get(eid)!.push(vb)
       }
 
       debug.eventsFound = betsByEvent.size
 
-      // ── Step 4: convert to OddsApiEvent ──────────────────────────────────────
-      const { events, liveEventIds } = valueBetsToEvents(betsByEvent)
+      // ── Step 4: map to OddsApiEvent ────────────────────────────────────────
+      // First pass: strict moneyline markets only
+      let { events, liveEventIds } = convertBets(betsByEvent, true)
+
+      // Second pass: if no moneyline value bets, include all non-total markets
+      if (events.length === 0) {
+        ({ events, liveEventIds } = convertBets(betsByEvent, false))
+      }
+
       debug.mappedEvents = events.length
 
-      if (events.length === 0 && allValueBets.length > 0) {
-        const raw = allValueBets[0] as unknown as Record<string, unknown>
-        const { event: _ev, ...rest } = raw
-        debug.oddsError = `Full structure (no event): ${JSON.stringify(rest).slice(0, 350)}`
+      if (events.length === 0 && allRawBets.length > 0) {
+        const names = [...new Set(allRawBets.map((v) => {
+          const m = v.market as RawBet | undefined
+          return String(m?.name ?? "?")
+        }))].join(",")
+        debug.oddsError = (debug.oddsError ? debug.oddsError + " | " : "") +
+          `Still 0 mapped. Market names in data: [${names}]`
       }
 
       return { events, quota: 5000, liveEventIds, debug }
