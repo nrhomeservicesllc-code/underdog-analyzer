@@ -30,6 +30,17 @@ function resolvePick(analyses: BetAnalysis[], savedId: string | null, key: strin
   return next
 }
 
+function sharePick(pick: BetAnalysis) {
+  const ud = pick.underdogTeam
+  const text = `🐶 SharpDog pick: ${ud.team} ${ud.bestAmericanOdds > 0 ? "+" : ""}${ud.bestAmericanOdds} vs ${pick.favoriteTeam.team} — ${pick.expectedValuePct > 0 ? "+" : ""}${pick.expectedValuePct.toFixed(1)}% edge`
+  const url = window.location.origin
+  if (navigator.share) {
+    navigator.share({ title: "SharpDog", text, url }).catch(() => {})
+  } else {
+    navigator.clipboard?.writeText(`${text}\n${url}`).catch(() => {})
+  }
+}
+
 function ThePickCard({ pick, tracked, onTrack, label }: {
   pick: BetAnalysis
   tracked: boolean
@@ -121,14 +132,18 @@ function ThePickCard({ pick, tracked, onTrack, label }: {
         </div>
       )}
 
-      {/* Track */}
-      <div className="px-4 pb-4 pt-1">
-        <button onClick={onTrack} className={`w-full py-3 rounded-xl font-bold text-sm transition-all ${
+      {/* Track + share */}
+      <div className="px-4 pb-4 pt-1 flex gap-2">
+        <button onClick={onTrack} className={`flex-1 py-3 rounded-xl font-bold text-sm transition-all ${
           tracked
             ? "bg-amber-500/20 text-amber-400 border border-amber-500/30"
             : "bg-emerald-600 hover:bg-emerald-500 text-white"
         }`}>
           {tracked ? "✓ Tracking this pick" : "Track This Pick"}
+        </button>
+        <button onClick={() => sharePick(pick)} title="Share this pick"
+          className="px-4 py-3 rounded-xl font-bold text-sm bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800">
+          ↗
         </button>
       </div>
     </div>
@@ -154,6 +169,27 @@ export function BettingDashboard() {
     setSavedUpcomingId(getSaved(UPCOMING_PICK_KEY))
   }, [])
 
+  // Auth + subscription gate: must be logged in, and subscribed once billing is on
+  const [me, setMe] = useState<{ username: string; role: string } | null>(null)
+  useEffect(() => {
+    fetch("/api/me")
+      .then(async (r) => {
+        if (r.status === 401) { window.location.href = "/login"; return null }
+        return r.json()
+      })
+      .then((json) => {
+        if (!json) return
+        if (!json.access) { window.location.href = "/subscribe"; return }
+        setMe({ username: json.username, role: json.role })
+      })
+      .catch(() => {})
+  }, [])
+
+  async function logout() {
+    await fetch("/api/auth/logout", { method: "POST" })
+    window.location.href = "/login"
+  }
+
   const reloadBets = useCallback(() => setTrackedBets(loadBets()), [])
 
   const load = useCallback(async () => {
@@ -161,6 +197,8 @@ export function BettingDashboard() {
     setError(null)
     try {
       const res  = await fetch("/api/odds")
+      if (res.status === 401) { window.location.href = "/login"; return }
+      if (res.status === 402) { window.location.href = "/subscribe"; return }
       const json: AnalysisResponse & { error?: string } = await res.json()
       if (json.error) throw new Error(json.error)
       setData(json)
@@ -297,12 +335,17 @@ export function BettingDashboard() {
         <div className="max-w-md mx-auto px-4 py-3 flex items-center justify-between">
           <span className="text-xl font-black">Sharp<span className="text-emerald-400">Dog</span></span>
           <div className="flex items-center gap-2">
+            {me && <span className="text-zinc-600 text-xs font-medium">{me.username}{me.role === "admin" ? " ★" : ""}</span>}
             <span className="text-zinc-700 text-xs">{refreshed?.toLocaleTimeString()}</span>
             <button onClick={load} disabled={loading}
               className="w-7 h-7 flex items-center justify-center rounded bg-zinc-900 text-zinc-400 hover:bg-zinc-800 disabled:opacity-30">
               {loading
                 ? <span className="w-3 h-3 border border-zinc-500 border-t-transparent rounded-full animate-spin" />
                 : "↻"}
+            </button>
+            <button onClick={logout} title="Sign out"
+              className="w-7 h-7 flex items-center justify-center rounded bg-zinc-900 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 text-xs">
+              ⎋
             </button>
           </div>
         </div>

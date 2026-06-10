@@ -1,12 +1,15 @@
 {
-  "name": "Underdog. — Sports Betting Value Scanner",
-  "short_name": "Underdog.",
-  "description": "Real-time underdog EV finder across 30+ sports and 40+ bookmakers.",
+  "name": "SharpDog — One Sharp Underdog Pick. Every Day.",
+  "short_name": "SharpDog",
+  "description": "The single best-value underdog bet across every sport, every day. Vig stripped, edge calculated.",
+  "id": "/",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#09090b",
   "theme_color": "#09090b",
   "orientation": "portrait",
+  "categories": ["sports", "entertainment"],
   "icons": [
     {
       "src": "/icon-192.png",

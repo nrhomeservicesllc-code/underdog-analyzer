@@ -4,19 +4,37 @@ import "./globals.css"
 
 const inter = Inter({ subsets: ["latin"] })
 
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://sharpdog.app"
+
 export const metadata: Metadata = {
-  title: "Underdog. — Live Sports Betting Value Scanner",
+  metadataBase: new URL(SITE_URL),
+  title: "SharpDog — One Sharp Underdog Pick. Every Day.",
   description:
-    "Real-time underdog EV finder. Scans 30+ sports and 40+ bookmakers, strips the vig, and surfaces the best-value underdog picks — live.",
+    "SharpDog finds the single best-value underdog bet across every sport, every day. Real bookmaker odds, vig stripped, edge calculated. Live and upcoming picks.",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "Underdog.",
+    title: "SharpDog",
   },
   icons: {
     icon: "/icon-192.png",
     apple: "/icon-192.png",
+  },
+  openGraph: {
+    title: "SharpDog — One Sharp Underdog Pick. Every Day.",
+    description:
+      "The single best-value underdog bet across every sport, every day. Vig stripped, edge calculated.",
+    url: SITE_URL,
+    siteName: "SharpDog",
+    images: [{ url: "/og-image.png", width: 1200, height: 630 }],
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "SharpDog — One Sharp Underdog Pick. Every Day.",
+    description: "The single best-value underdog bet across every sport, every day.",
+    images: ["/og-image.png"],
   },
 }
 

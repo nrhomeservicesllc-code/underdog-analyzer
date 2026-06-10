@@ -4,11 +4,21 @@ import type { LiveScore, OddsDebug } from "@/lib/odds-api"
 import { analyzeAll } from "@/lib/analyzer"
 import { demoEvents } from "@/lib/demo"
 import type { OddsApiEvent } from "@/types/betting"
+import { getSession, getSessionUser, hasAccess } from "@/lib/auth"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function GET() {
+  // Auth + subscription gate
+  const session = await getSession()
+  if (!session) return NextResponse.json({ error: "Not logged in" }, { status: 401 })
+  const user = await getSessionUser(session)
+  if (!user) return NextResponse.json({ error: "Account not found" }, { status: 401 })
+  if (!hasAccess(user)) {
+    return NextResponse.json({ error: "Subscription required", subscribe: true }, { status: 402 })
+  }
+
   const apiKey = process.env.ODDS_API_KEY?.trim()
   const hasKey = !!apiKey
 
