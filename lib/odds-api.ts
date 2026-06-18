@@ -182,7 +182,8 @@ function convertBets(
 function asArray<T>(val: unknown): T[] {
   if (Array.isArray(val)) return val as T[]
   if (val && typeof val === "object") {
-    for (const key of ["data", "bookmakers", "results", "items", "selected", "bets", "valueBets"]) {
+    // Check all common wrapper keys the API uses, including "events" for /events/live responses
+    for (const key of ["data", "events", "live", "bookmakers", "results", "items", "selected", "bets", "valueBets"]) {
       const v = (val as Record<string, unknown>)[key]
       if (Array.isArray(v)) return v as T[]
     }
@@ -371,6 +372,27 @@ export class OddsApiClient {
         const seenLiveIds = new Set<string>()
         const MAX_LIVE    = 10
 
+        // Index of existing pre-match events by team name for fast lookup
+        const teamToEvent = new Map<string, OddsApiEvent>()
+        for (const ev of events) {
+          teamToEvent.set(ev.home_team.toLowerCase(), ev)
+          teamToEvent.set(ev.away_team.toLowerCase(), ev)
+        }
+        function findByTeams(h: string, a: string): OddsApiEvent | null {
+          const hl = h.toLowerCase(); const al = a.toLowerCase()
+          const byH = teamToEvent.get(hl); const byA = teamToEvent.get(al)
+          if (byH && byH.away_team.toLowerCase() === al) return byH
+          if (byA && byA.home_team.toLowerCase() === hl) return byA
+          // City/first-word fuzzy match
+          const h0 = hl.split(" ")[0]; const a0 = al.split(" ")[0]
+          for (const ev of events) {
+            if (h0.length < 3 || a0.length < 3) continue
+            const eh = ev.home_team.toLowerCase(); const ea = ev.away_team.toLowerCase()
+            if ((eh.startsWith(h0) || eh.includes(h0)) && (ea.startsWith(a0) || ea.includes(a0))) return ev
+          }
+          return null
+        }
+
         for (const sport of sportSlugs) {
           if (seenLiveIds.size >= MAX_LIVE) break
 
@@ -387,7 +409,6 @@ export class OddsApiClient {
           if (!liveEvs.length) {
             try {
               await new Promise((r) => setTimeout(r, 200))
-              // getEvents with status filter is an alternative live endpoint
               const evRes = asArray<RawBet>(
                 await (this.sdk as unknown as Record<string, (a: Record<string, string>) => unknown>)
                   .getEvents?.({ sport, status: "live" }) as unknown
@@ -435,7 +456,15 @@ export class OddsApiClient {
               }
 
               if (!liveBooks.length) {
-                liveDbg.push(`${lid.slice(-5)}:no_books`)
+                // No live odds available — fall back to team-name match on pre-match events
+                const pre = findByTeams(homeName, awayName)
+                if (pre) {
+                  liveEventIds.add(pre.id)
+                  seenLiveIds.add(lid)
+                  liveDbg.push(`preMatch:${pre.id.slice(-5)}`)
+                } else {
+                  liveDbg.push(`${lid.slice(-5)}:no_books`)
+                }
                 continue
               }
 
@@ -459,6 +488,22 @@ export class OddsApiClient {
               // No break — collect ALL live events across all sports
             } catch (e: unknown) {
               liveDbg.push(`${lid.slice(-5)}:odERR(${(e as Error).message.slice(0, 40)})`)
+            }
+          }
+        }
+
+        // Last resort: mark pre-match events as live by start-time if API found nothing
+        if (liveEventIds.size === 0) {
+          const now = Date.now()
+          for (const ev of events) {
+            const commenced = new Date(ev.commence_time).getTime()
+            if (commenced > now) continue
+            const elapsedMin = (now - commenced) / 60_000
+            // Default window 3h; sport-specific windows in LIVE_WINDOW_MINUTES
+            const window = LIVE_WINDOW_MINUTES[ev.sport_key] ?? 180
+            if (elapsedMin <= window) {
+              liveEventIds.add(ev.id)
+              liveDbg.push(`timeLive:${ev.id.slice(-5)}(${Math.round(elapsedMin)}m)`)
             }
           }
         }
