@@ -5,7 +5,7 @@ import type { AnalysisResponse, BetAnalysis, TrackedBet } from "@/types/betting"
 import { BetTracker } from "./BetTracker"
 import { loadBets, trackBet, untrackBet, isTracked, calcRecord } from "@/lib/tracker"
 
-const REFRESH_INTERVAL_MS = 60 * 60_000  // 1 hour
+const REFRESH_INTERVAL_MS = 15 * 60_000  // 15 minutes — keeps live section current
 const MAX_UPCOMING = 3                    // how many upcoming picks to display
 
 function fmtAmerican(n: number) { return n > 0 ? `+${n}` : `${n}` }

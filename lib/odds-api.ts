@@ -1,6 +1,44 @@
 import { OddsAPIClient as SdkClient, InvalidAPIKeyError, RateLimitExceededError } from "odds-api-io"
 import type { OddsApiEvent, Bookmaker } from "@/types/betting"
 
+// ── KV cache: persist pre-match events across serverless invocations ─────────
+// Once a game goes live it drops from the value-bets feed.  We save the
+// pre-match events to KV (Upstash) so the NEXT request can still use their
+// last-known odds and mark them as LIVE via time-based detection.
+const KV_EVENTS_KEY = "sharpdog:prematch:v2"
+const KV_TTL_SEC    = 4 * 60 * 60  // 4 h — covers the longest games
+
+function kvCfg() {
+  const url   = process.env.KV_REST_API_URL  ?? process.env.UPSTASH_REDIS_REST_URL
+  const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN
+  return url && token ? { url, token } : null
+}
+
+async function kvSaveEvents(events: OddsApiEvent[]): Promise<void> {
+  const cfg = kvCfg(); if (!cfg) return
+  try {
+    // Only cache upcoming events (not already-live ones from value bets)
+    const upcoming = events.filter((e) => new Date(e.commence_time).getTime() > Date.now() - 5 * 60_000)
+    if (!upcoming.length) return
+    await fetch(`${cfg.url}/set/${KV_EVENTS_KEY}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${cfg.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(["EX", KV_TTL_SEC, JSON.stringify(upcoming)]),
+    })
+  } catch (_) {}
+}
+
+async function kvLoadEvents(): Promise<OddsApiEvent[] | null> {
+  const cfg = kvCfg(); if (!cfg) return null
+  try {
+    const res  = await fetch(`${cfg.url}/get/${KV_EVENTS_KEY}`, {
+      headers: { Authorization: `Bearer ${cfg.token}` },
+    })
+    const json = await res.json() as { result?: string }
+    return json.result ? (JSON.parse(json.result) as OddsApiEvent[]) : null
+  } catch (_) { return null }
+}
+
 export interface LiveScore {
   homeScore: string
   awayScore: string
@@ -282,6 +320,10 @@ export class OddsApiClient {
         ({ events, liveEventIds } = convertBets(betsByEvent, false))
       }
 
+      // Save today's pre-match events to KV — if these games go live later,
+      // the next refresh will restore them from cache and mark them LIVE.
+      await kvSaveEvents(events)
+
       // ── Step 5: detect genuinely live (in-progress) games ────────────────────
       const liveDbg: string[] = []
 
@@ -492,18 +534,27 @@ export class OddsApiClient {
           }
         }
 
-        // Last resort: mark pre-match events as live by start-time if API found nothing
+        // Last resort: check KV-cached pre-match events + current events by start-time.
+        // Games that dropped off the value-bets feed after tip-off are recovered here.
         if (liveEventIds.size === 0) {
+          const cached   = await kvLoadEvents()
+          const pool     = [...events]
+          if (cached) {
+            for (const c of cached) {
+              if (!pool.find((e) => e.id === c.id)) pool.push(c)
+            }
+            liveDbg.push(`kvPool:${cached.length}ev`)
+          }
           const now = Date.now()
-          for (const ev of events) {
+          for (const ev of pool) {
             const commenced = new Date(ev.commence_time).getTime()
             if (commenced > now) continue
             const elapsedMin = (now - commenced) / 60_000
-            // Default window 3h; sport-specific windows in LIVE_WINDOW_MINUTES
             const window = LIVE_WINDOW_MINUTES[ev.sport_key] ?? 180
             if (elapsedMin <= window) {
+              if (!events.find((e) => e.id === ev.id)) events.push(ev)
               liveEventIds.add(ev.id)
-              liveDbg.push(`timeLive:${ev.id.slice(-5)}(${Math.round(elapsedMin)}m)`)
+              liveDbg.push(`kv:${ev.id.slice(-5)}(${Math.round(elapsedMin)}m)`)
             }
           }
         }

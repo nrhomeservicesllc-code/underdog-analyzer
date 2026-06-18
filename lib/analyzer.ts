@@ -174,9 +174,11 @@ export function analyzeEvent(event: OddsApiEvent): BetAnalysis | null {
   const live        = (event as OddsApiEvent & { _confirmedLive?: boolean })._confirmedLive ?? false
   const apiEV       = event._apiEV   // EV% from the API's sharp-book calc
 
-  // Hard quality gate — skip picks that would hurt the record
+  // Hard quality gate — skip pre-match picks that would hurt the record.
+  // Live games bypass the gate: we always want to show in-progress games
+  // even when the pre-match EV is no longer accurate.
   const gateResult = qualityGate(ud, apiEV, evPct)
-  if (gateResult) return null
+  if (gateResult && !live) return null
 
   const udScore = score(evPct, apiEV, ud.bestAmericanOdds, live)
   const rec     = recommend(apiEV, evPct, ud.bestAmericanOdds)
@@ -236,7 +238,9 @@ export function analyzeAll(
     })
     .filter((a): a is BetAnalysis => {
       if (!a) return false
-      // Don't surface AVOID picks — they'd only hurt the record
+      // Always surface live games — pre-match EV may be stale but the game is happening
+      if (a.isLive) return true
+      // Don't surface pre-match AVOID picks — they'd only hurt the record
       return a.recommendation !== "AVOID"
     })
     .sort((a, b) => {
