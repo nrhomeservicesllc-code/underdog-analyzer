@@ -6,29 +6,9 @@ import { BetTracker } from "./BetTracker"
 import { loadBets, trackBet, untrackBet, isTracked, calcRecord } from "@/lib/tracker"
 
 const REFRESH_INTERVAL_MS = 60 * 60_000  // 1 hour
-const LIVE_PICK_KEY     = "sharpdog_live_pick"
-const UPCOMING_PICK_KEY = "sharpdog_upcoming_pick"
+const MAX_UPCOMING = 3                    // how many upcoming picks to display
 
 function fmtAmerican(n: number) { return n > 0 ? `+${n}` : `${n}` }
-
-function getSaved(key: string): string | null {
-  try { return localStorage.getItem(key) } catch { return null }
-}
-function savePick(key: string, id: string) {
-  try { localStorage.setItem(key, id) } catch {}
-}
-
-// Hold the same pick until its event leaves the dataset, then auto-advance
-function resolvePick(analyses: BetAnalysis[], savedId: string | null, key: string): BetAnalysis | null {
-  if (!analyses.length) return null
-  if (savedId) {
-    const found = analyses.find((a) => a.eventId === savedId)
-    if (found) return found
-  }
-  const next = analyses[0]
-  savePick(key, next.eventId)
-  return next
-}
 
 function sharePick(pick: BetAnalysis) {
   const ud = pick.underdogTeam
@@ -151,25 +131,19 @@ function ThePickCard({ pick, tracked, onTrack, label }: {
 }
 
 export function BettingDashboard() {
-  const [data,            setData]            = useState<AnalysisResponse | null>(null)
-  const [loading,         setLoading]         = useState(true)
-  const [error,           setError]           = useState<string | null>(null)
-  const [tab,             setTab]             = useState<"pick" | "record">("pick")
-  const [trackedBets,     setTrackedBets]     = useState<TrackedBet[]>([])
-  const [refreshed,       setRefreshed]       = useState<Date | null>(null)
-  const [savedLiveId,     setSavedLiveId]     = useState<string | null>(null)
-  const [savedUpcomingId, setSavedUpcomingId] = useState<string | null>(null)
-  const [livePick,        setLivePick]        = useState<BetAnalysis | null>(null)
-  const [upcomingPick,    setUpcomingPick]    = useState<BetAnalysis | null>(null)
+  const [data,         setData]         = useState<AnalysisResponse | null>(null)
+  const [loading,      setLoading]      = useState(true)
+  const [error,        setError]        = useState<string | null>(null)
+  const [tab,          setTab]          = useState<"pick" | "record">("pick")
+  const [trackedBets,  setTrackedBets]  = useState<TrackedBet[]>([])
+  const [refreshed,    setRefreshed]    = useState<Date | null>(null)
+  const [livePicks,    setLivePicks]    = useState<BetAnalysis[]>([])
+  const [upcomingPicks,setUpcomingPicks]= useState<BetAnalysis[]>([])
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  useEffect(() => {
-    setTrackedBets(loadBets())
-    setSavedLiveId(getSaved(LIVE_PICK_KEY))
-    setSavedUpcomingId(getSaved(UPCOMING_PICK_KEY))
-  }, [])
+  useEffect(() => { setTrackedBets(loadBets()) }, [])
 
-  // Auth + subscription gate: must be logged in, and subscribed once billing is on
+  // Auth + subscription gate
   const [me, setMe] = useState<{ username: string; role: string } | null>(null)
   useEffect(() => {
     fetch("/api/me")
@@ -219,30 +193,13 @@ export function BettingDashboard() {
     return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
   }, [load])
 
-  // Resolve both picks whenever analyses update
+  // Split analyses into live and upcoming lists on every data refresh
   useEffect(() => {
     if (!data) return
-    const liveGames   = data.allAnalyses.filter((a) => a.isLive)
-    const upcomingAll = data.allAnalyses.filter((a) => !a.isLive)
-
-    // LIVE slot: a real in-progress game when one exists; otherwise the
-    // soonest-starting upcoming game, so the slot is never empty.
-    const liveCandidates = liveGames.length
-      ? liveGames
-      : [...upcomingAll].sort(
-          (a, b) => new Date(a.commenceTime).getTime() - new Date(b.commenceTime).getTime()
-        )
-
-    const lp = resolvePick(liveCandidates, savedLiveId, LIVE_PICK_KEY)
-    setLivePick(lp)
-    if (lp && lp.eventId !== savedLiveId) setSavedLiveId(lp.eventId)
-
-    // COMING UP slot: best upcoming by score, never duplicating the live slot.
-    const upcomingForSlot = upcomingAll.filter((a) => a.eventId !== lp?.eventId)
-    const up = resolvePick(upcomingForSlot, savedUpcomingId, UPCOMING_PICK_KEY)
-    setUpcomingPick(up)
-    if (up && up.eventId !== savedUpcomingId) setSavedUpcomingId(up.eventId)
-  }, [data, savedLiveId, savedUpcomingId])
+    // analyzeAll already sorted: live first, then by underdogScore desc
+    setLivePicks(data.allAnalyses.filter((a) => a.isLive))
+    setUpcomingPicks(data.allAnalyses.filter((a) => !a.isLive).slice(0, MAX_UPCOMING))
+  }, [data])
 
   function handleTrack(a: BetAnalysis) {
     if (isTracked(a.eventId, trackedBets)) untrackBet(a.eventId)
@@ -370,65 +327,70 @@ export function BettingDashboard() {
 
       {/* PICKS tab */}
       {tab === "pick" && (
-        <main className="max-w-md mx-auto px-4 py-6 space-y-6">
+        <main className="max-w-md mx-auto px-4 py-6 space-y-8">
 
-          {/* Live pick (or soonest-starting fallback) */}
-          <section className="space-y-2">
+          {/* ── Live Now ── */}
+          <section className="space-y-3">
             <div className="flex items-center gap-2">
-              <span className={`w-1.5 h-1.5 rounded-full ${livePick?.isLive ? "bg-red-500 animate-pulse" : "bg-emerald-500"}`} />
+              <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
               <span className="text-[11px] text-zinc-500 font-bold uppercase tracking-widest">
-                {livePick?.isLive ? "Live Now" : "Top Pick — Starting Soonest"}
+                Live Now
               </span>
+              {livePicks.length > 0 && (
+                <span className="ml-auto bg-red-500/20 text-red-400 text-[10px] font-black px-2 py-0.5 rounded-full">
+                  {livePicks.length} game{livePicks.length > 1 ? "s" : ""}
+                </span>
+              )}
             </div>
-            {livePick ? (
-              <ThePickCard
-                pick={livePick}
-                label={livePick.isLive ? "🔴 Live Underdog" : "▶ Next To Start"}
-                tracked={isTracked(livePick.eventId, trackedBets)}
-                onTrack={() => handleTrack(livePick)}
-              />
+
+            {livePicks.length > 0 ? (
+              <div className="space-y-4">
+                {livePicks.map((pick, i) => (
+                  <ThePickCard
+                    key={pick.eventId}
+                    pick={pick}
+                    label={i === 0 ? "🔴 Best Live Underdog" : "🔴 Live Underdog"}
+                    tracked={isTracked(pick.eventId, trackedBets)}
+                    onTrack={() => handleTrack(pick)}
+                  />
+                ))}
+              </div>
             ) : (
-              <div className="bg-zinc-950 border border-zinc-900 rounded-xl px-4 py-6 text-center">
-                <p className="text-zinc-600 text-sm">No games available right now</p>
+              <div className="bg-zinc-950 border border-zinc-800/60 rounded-xl px-4 py-5 text-center">
+                <p className="text-zinc-600 text-sm">No live games right now</p>
+                <p className="text-zinc-700 text-xs mt-0.5">Check back during game time</p>
               </div>
             )}
           </section>
 
-          {/* Upcoming pick */}
-          <section className="space-y-2">
+          {/* ── Coming Up ── */}
+          <section className="space-y-3">
             <div className="flex items-center gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-zinc-500" />
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
               <span className="text-[11px] text-zinc-500 font-bold uppercase tracking-widest">Coming Up</span>
+              {upcomingPicks.length > 1 && (
+                <span className="ml-auto text-zinc-700 text-[10px]">Top {upcomingPicks.length} picks by edge</span>
+              )}
             </div>
-            {upcomingPick ? (
-              <ThePickCard
-                pick={upcomingPick}
-                label="⭐ Next Best Pick"
-                tracked={isTracked(upcomingPick.eventId, trackedBets)}
-                onTrack={() => handleTrack(upcomingPick)}
-              />
+
+            {upcomingPicks.length > 0 ? (
+              <div className="space-y-4">
+                {upcomingPicks.map((pick, i) => (
+                  <ThePickCard
+                    key={pick.eventId}
+                    pick={pick}
+                    label={i === 0 ? "⭐ Best Pick" : `#${i + 1} Pick`}
+                    tracked={isTracked(pick.eventId, trackedBets)}
+                    onTrack={() => handleTrack(pick)}
+                  />
+                ))}
+              </div>
             ) : (
-              <div className="bg-zinc-950 border border-zinc-900 rounded-xl px-4 py-6 text-center">
+              <div className="bg-zinc-950 border border-zinc-800/60 rounded-xl px-4 py-5 text-center">
                 <p className="text-zinc-600 text-sm">No upcoming games in window</p>
               </div>
             )}
           </section>
-
-          {/* Debug panel — only visible when no picks found */}
-          {!livePick && !upcomingPick && data.oddsDebug && (
-            <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4 space-y-1 font-mono text-[10px] text-zinc-600">
-              <p className="text-zinc-500 font-bold mb-2">API diagnostic</p>
-              <p>Sports found: <span className="text-zinc-400">{data.oddsDebug.sportsFound}</span> [{data.oddsDebug.sportIds.join(", ")}]</p>
-              <p>Events found: <span className="text-zinc-400">{data.oddsDebug.eventsFound}</span></p>
-              <p>Bookmakers: <span className="text-zinc-400">{data.oddsDebug.allBooks} all / {data.oddsDebug.selectedBooks} selected</span></p>
-              <p>First bookmaker obj: <span className="text-zinc-400 break-all">{data.oddsDebug.firstBookmaker}</span></p>
-              <p>Odds entries returned: <span className="text-zinc-400">{data.oddsDebug.oddsEntries}</span></p>
-              {data.oddsDebug.oddsError && (
-                <p className="text-red-500">Odds error: {data.oddsDebug.oddsError}</p>
-              )}
-              <p>Mapped events: <span className="text-zinc-400">{data.oddsDebug.mappedEvents}</span></p>
-            </div>
-          )}
 
           <p className="text-center text-zinc-700 text-[11px]">
             {data.totalGamesScanned} games scanned · refreshes every hour
