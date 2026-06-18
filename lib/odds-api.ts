@@ -148,6 +148,16 @@ function convertBets(
     if (!books.length) continue
     if (isLive) liveEventIds.add(eventId)
 
+    // Extract the best EV% the API computed using its sharp-book reference prices.
+    // The API returns expectedValue as a return percentage (108.25 → 8.25% EV).
+    let maxApiEV: number | undefined
+    for (const vb of vbs) {
+      const raw = Number(vb.expectedValue ?? 0)
+      if (!raw || isNaN(raw)) continue
+      const evPct = raw > 10 ? raw - 100 : raw * 100   // normalise to EV%
+      if (maxApiEV === undefined || evPct > maxApiEV) maxApiEV = evPct
+    }
+
     const sportRaw  = ev.sport  as RawBet | string | undefined
     const leagueRaw = ev.league as RawBet | string | undefined
     const sportStr  = typeof sportRaw  === "object" ? String((sportRaw  as RawBet)?.name ?? (sportRaw  as RawBet)?.slug ?? "Sports") : String(sportRaw  ?? "Sports")
@@ -162,6 +172,7 @@ function convertBets(
       home_team:     homeName,
       away_team:     awayName,
       bookmakers:    books,
+      _apiEV:        maxApiEV,
     })
   }
 

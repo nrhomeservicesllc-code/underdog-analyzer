@@ -25,6 +25,8 @@ export interface OddsApiEvent {
   home_team: string
   away_team: string
   bookmakers: Bookmaker[]
+  /** EV% from the API's sharp-book reference calculation (e.g. 8.25 = +8.25% edge) */
+  _apiEV?: number
 }
 
 export interface OddsApiSport {
@@ -107,6 +109,7 @@ export interface AnalysisResponse {
     oddsEntries: number
     oddsError: string | null
     mappedEvents: number
+    liveDebug: string
   }
 }
 
