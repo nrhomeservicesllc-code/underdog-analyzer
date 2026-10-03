@@ -1,0 +1,47 @@
+name: Polymarket desk
+
+on:
+  push:
+    paths:
+      - "polymarket-desk/**"
+      - ".github/workflows/polymarket-desk.yml"
+  schedule:
+    - cron: "17 */6 * * *"   # every 6 hours (runs from the default branch)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: polymarket-desk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt pytest
+      - name: Tests
+        run: python -m pytest -q
+      - name: Arbitrage scan
+        run: |
+          { echo "## Arbitrage"; echo '```'; python -m desk arb --markets 300 2>&1; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Liquidity rewards
+        run: |
+          { echo "## Liquidity rewards"; echo '```'; python -m desk rewards --top 15 2>&1; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Whale trades
+        run: |
+          { echo "## Whale trades"; echo '```'; python -m desk whales --min-usd 10000 2>&1 | head -40; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Paper bot (one pass)
+        run: |
+          { echo "## Paper bot"; echo '```'; python -m desk bot --once 2>&1; python -m desk positions 2>&1; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desk-data
+          path: polymarket-desk/data/
+          if-no-files-found: ignore

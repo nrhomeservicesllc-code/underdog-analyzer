@@ -18,7 +18,17 @@ until you decide to trade live.
 
 ## Setup (5 minutes)
 
-You need Python 3.10+.
+You need Python 3.10+ (python.org).
+
+**Easiest:** double-click `start.bat` (Windows), or run `./start.sh`
+(Mac/Linux). The first run sets everything up and then shows a menu.
+
+**Automatic scans:** the GitHub Action in
+`.github/workflows/polymarket-desk.yml` runs the scanners every 6 hours
+once this is merged to `main`. It runs in paper mode only. Open the
+**Actions** tab to read each run's report.
+
+**Manual setup:**
 
 ```bash
 cd polymarket-desk

@@ -19,8 +19,7 @@ Follow these steps in order. Each one takes a few minutes.
 4. Click **Deploy**. Your app is live at `https://<project>.vercel.app`
 5. Optional: **Settings → Domains** to attach a custom domain like `sharpdog.app`
 
-**Your admin login:** username `sharpdogadmin`, password `Zabdiel2025!`
-(Change it later by setting `ADMIN_PASSWORD_HASH` in Vercel env vars.)
+**Your admin login:** username `sharpdogadmin`. Set your own password by putting a bcrypt hash in the `ADMIN_PASSWORD_HASH` Vercel env var.
 
 ---
 
