@@ -108,3 +108,17 @@ def test_backtest_math():
     assert abs(r.z_score) < 1e-9
     r = backtest.run([backtest.Sample("q", "Yes", 0.9, False)], stake=10, fee=0)
     assert r.pnl == -10 and r.max_drawdown == 10
+
+
+def test_dotenv_strips_inline_comments(tmp_path, monkeypatch):
+    from desk.config import _load_dotenv
+    env = tmp_path / ".env"
+    env.write_text('A_EDGE=0.01          # note\nB_KEY=\nC_Q="x # y"  # note\nD_F=     # empty with note\n# full comment\n')
+    for k in ("A_EDGE", "B_KEY", "C_Q", "D_F"):
+        monkeypatch.delenv(k, raising=False)
+    _load_dotenv(env)
+    import os
+    assert os.environ["A_EDGE"] == "0.01"
+    assert os.environ["B_KEY"] == ""
+    assert os.environ["C_Q"] == "x # y"
+    assert os.environ["D_F"] == ""
