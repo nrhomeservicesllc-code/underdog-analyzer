@@ -20,7 +20,7 @@ until you decide to trade live.
 
 You need Python 3.10+ (python.org).
 
-**Easiest:** double-click `start.bat` (Windows), or run `./start.sh`
+**Easiest:** double-click `start.bat` (Windows), or run `bash start.sh`
 (Mac/Linux). The first run sets everything up and then shows a menu.
 
 **Automatic scans:** the GitHub Action in
